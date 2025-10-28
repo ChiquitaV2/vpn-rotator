@@ -1,0 +1,247 @@
+#cloud-config
+# VPN Rotator - WireGuard Server Configuration
+# This script is executed by cloud-init when the server first boots.
+# It installs and configures WireGuard as a VPN server.
+
+# Update package lists and install required packages
+package_update: true
+package_upgrade: true
+packages:
+  - wireguard
+  - wireguard-tools
+  - ufw
+  - net-tools
+
+# Write configuration files before running commands
+write_files:
+  # Enable IP forwarding (required for VPN routing)
+  - path: /etc/sysctl.d/99-wireguard.conf
+    content: |
+      # Enable IPv4 forwarding
+      net.ipv4.ip_forward=1
+      # Enable IPv6 forwarding
+      net.ipv6.conf.all.forwarding=1
+      # Disable IPv6 if not needed (optional)
+      # net.ipv6.conf.all.disable_ipv6=1
+    permissions: '0644'
+    owner: root:root
+
+  # WireGuard interface configuration
+  - path: /etc/wireguard/wg0.conf
+    content: |
+      [Interface]
+      # Server's private key (unique per node)
+      PrivateKey = {{.ServerPrivateKey}}
+      
+      # Internal VPN subnet (10.8.0.0/24)
+      # Server gets .1, clients get .2-.254
+      Address = 10.8.0.1/24
+      
+      # Listen on all interfaces, UDP port 51820
+      ListenPort = 51820
+      
+      # Set MTU to 1420 to avoid fragmentation issues
+      MTU = 1420
+      
+      # Routing setup: forward VPN traffic to internet
+      # PostUp runs when interface comes up
+      PostUp = iptables -A FORWARD -i wg0 -o eth0 -j ACCEPT
+      PostUp = iptables -A FORWARD -i eth0 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+      PostUp = iptables -t nat -I POSTROUTING -o eth0 -j MASQUERADE
+      PostUp = ip6tables -t nat -I POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
+      
+      # Cleanup routing on shutdown
+      # PreDown runs when interface goes down
+      PreDown = iptables -D FORWARD -i wg0 -o eth0 -j ACCEPT
+      PreDown = iptables -D FORWARD -i eth0 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+      PreDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+      PreDown = ip6tables -t nat -D POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || true
+      
+      # Clients are added dynamically by WireGuard
+      # No [Peer] sections needed here
+    permissions: '0600'  # Only root can read (contains private key)
+    owner: root:root
+
+  # Store the public key for retrieval (used by API)
+  - path: /etc/wireguard/publickey
+    content: |
+      {{.ServerPublicKey}}
+    permissions: '0644'
+    owner: root:root
+
+  # Disable WireGuard connection logging for privacy
+  - path: /etc/systemd/system/wg-quick@.service.d/override.conf
+    content: |
+      [Service]
+      # Don't log WireGuard connections to journal
+      StandardOutput=null
+      StandardError=null
+    permissions: '0644'
+    owner: root:root
+
+# Commands to run after files are written
+runcmd:
+  # Ensure root account is unlocked and ready for SSH key auth
+  - usermod -p '*' root
+  - passwd -u root
+
+  # Ensure SSH service is running and enabled
+  - systemctl enable ssh
+  - systemctl start ssh
+  
+  # Apply sysctl settings immediately
+  - sysctl -p /etc/sysctl.d/99-wireguard.conf
+
+  # Configure UFW (Uncomplicated Firewall)
+  - ufw --force enable
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 51820/udp comment 'WireGuard VPN'
+  - ufw allow 22/tcp comment 'SSH (emergency access)'
+  
+  # Reload UFW to apply rules
+  - ufw reload
+
+  # Reload systemd to pick up override
+  - systemctl daemon-reload
+
+  # Enable WireGuard to start on boot
+  - systemctl enable wg-quick@wg0
+
+  # Start WireGuard interface
+  - systemctl start wg-quick@wg0
+
+  # Wait for interface to come up
+  - sleep 2
+
+  # Verify WireGuard is running
+  - wg show wg0
+
+  # Set up a simple health check endpoint
+  - |
+    cat > /usr/local/bin/health-server.py << 'EOF'
+    #!/usr/bin/env python3
+    import http.server
+    import socketserver
+    import subprocess
+    import json
+    from datetime import datetime
+    
+    class HealthHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/health':
+                try:
+                    # Check if WireGuard interface is up
+                    result = subprocess.run(['wg', 'show', 'wg0'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 1:
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        response = {
+                            'status': 'healthy',
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'service': 'wireguard'
+                        }
+                        self.wfile.write(json.dumps(response).encode())
+                    else:
+                        self.send_response(503)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        response = {
+                            'status': 'unhealthy',
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'error': 'WireGuard interface not found'
+                        }
+                        self.wfile.write(json.dumps(response).encode())
+                except Exception as e:
+                    self.send_response(500)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    response = {
+                        'status': 'error',
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'error': str(e)
+                    }
+                    self.wfile.write(json.dumps(response).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+    
+        def log_message(self, format, *args):
+            # Suppress access logs for privacy
+            pass
+    
+    if __name__ == '__main__':
+        PORT = 8080
+        with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
+            httpd.serve_forever()
+    EOF
+
+  # Make health server executable
+  - chmod +x /usr/local/bin/health-server.py
+
+  # Create systemd service for health server
+  - |
+    cat > /etc/systemd/system/health-server.service << 'EOF'
+    [Unit]
+    Description=VPN Health Check Server
+    After=network.target wg-quick@wg0.service
+    Requires=wg-quick@wg0.service
+    
+    [Service]
+    Type=simple
+    User=nobody
+    Group=nogroup
+    ExecStart=/usr/local/bin/health-server.py
+    Restart=always
+    RestartSec=5
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+
+  # Allow health check port through firewall
+  - ufw allow 8080/tcp comment 'Health check endpoint'
+  - ufw reload
+
+  - systemctl start wg-quick@wg0
+
+  # Enable and start health server
+  - systemctl enable health-server
+  - systemctl start health-server
+
+  # Wait for health server to start
+  - sleep 3
+
+  # Log completion (for debugging)
+  - echo "WireGuard setup completed at $(date)" >> /var/log/wireguard-init.log
+  - |
+    echo "Public key: $(cat /etc/wireguard/publickey)" >> /var/log/wireguard-init.log
+  - wg show wg0 >> /var/log/wireguard-init.log
+  - echo "Health server started on port 8080" >> /var/log/wireguard-init.log
+
+# Set timezone (optional)
+timezone: UTC
+
+# User configuration
+users:
+  - name: root
+    # Unlock the root account and allow SSH key authentication
+    lock_passwd: false
+    # Don't require password change on first login
+    #    passwd: "*"
+    # Allow SSH access
+    ssh_authorized_keys:
+  { { - range .SSHPublicKeys } }
+- { { . } }
+  { { - end } }
+
+# SSH configuration
+# Disable root password login (security) - only allow key-based auth
+ssh_pwauth: false
+# Allow root login via SSH keys
+disable_root: false
+
+# Final message (appears in /var/log/cloud-init-output.log)
+final_message: "WireGuard VPN server is ready after $UPTIME seconds"

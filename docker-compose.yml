@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  vpn-rotator:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.rotator
+    container_name: vpn-rotator
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Required configuration
+      VPN_ROTATOR_HETZNER_API_TOKEN: ${VPN_ROTATOR_HETZNER_API_TOKEN}
+      VPN_ROTATOR_HETZNER_SSH_KEY: /etc/ssh/id_ed25519.pub
+      VPN_ROTATOR_HETZNER_SSH_PRIVATE_KEY_PATH: /etc/ssh/id_ed25519
+      
+      # Optional configuration with defaults
+      VPN_ROTATOR_LOG_LEVEL: ${VPN_ROTATOR_LOG_LEVEL:-info}
+      VPN_ROTATOR_LOG_FORMAT: ${VPN_ROTATOR_LOG_FORMAT:-json}
+      VPN_ROTATOR_API_LISTEN_ADDR: ${VPN_ROTATOR_API_LISTEN_ADDR:-:8080}
+      VPN_ROTATOR_DB_PATH: /data/rotator.db
+      VPN_ROTATOR_SCHEDULER_ROTATION_INTERVAL: ${VPN_ROTATOR_SCHEDULER_ROTATION_INTERVAL:-24h}
+      VPN_ROTATOR_SCHEDULER_CLEANUP_INTERVAL: ${VPN_ROTATOR_SCHEDULER_CLEANUP_INTERVAL:-1h}
+      VPN_ROTATOR_HETZNER_SERVER_TYPES: ${VPN_ROTATOR_HETZNER_SERVER_TYPES:-cx11,cx21}
+      VPN_ROTATOR_HETZNER_LOCATIONS: ${VPN_ROTATOR_HETZNER_LOCATIONS:-nbg1,fsn1}
+      VPN_ROTATOR_HETZNER_IMAGE: ${VPN_ROTATOR_HETZNER_IMAGE:-ubuntu-22.04}
+    volumes:
+      - ./data:/data
+      - ./ssh:/etc/ssh:ro  # Mount SSH keys (create ./ssh directory with your keys)
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - setup-ssh
+
+  vpn-connector:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.connector
+    container_name: vpn-connector
+    restart: unless-stopped
+    privileged: true  # Required for WireGuard interface management
+    network_mode: host  # Required for VPN functionality
+    environment:
+      VPN_ROTATOR_API_URL: ${VPN_ROTATOR_API_URL:-http://localhost:8080}
+      VPN_ROTATOR_LOG_LEVEL: ${VPN_ROTATOR_LOG_LEVEL:-info}
+      VPN_ROTATOR_LOG_FORMAT: ${VPN_ROTATOR_LOG_FORMAT:-json}
+      VPN_ROTATOR_INTERFACE: ${VPN_ROTATOR_INTERFACE:-wg0}
+      VPN_ROTATOR_ALLOWED_IPS: ${VPN_ROTATOR_ALLOWED_IPS:-0.0.0.0/0}
+      VPN_ROTATOR_DNS: ${VPN_ROTATOR_DNS:-1.1.1.1,8.8.8.8}
+      VPN_ROTATOR_POLL_INTERVAL: ${VPN_ROTATOR_POLL_INTERVAL:-15}
+      VPN_ROTATOR_KEY_PATH: /etc/vpn-rotator/client.key
+    volumes:
+      - ./client-keys:/etc/vpn-rotator
+    depends_on:
+      - vpn-rotator
+
+  # Helper service to set up SSH key permissions
+  setup-ssh:
+    image: alpine:latest
+    container_name: setup-ssh
+    command: |
+      sh -c "
+        if [ ! -f /etc/ssh/id_ed25519 ]; then
+          echo 'ERROR: SSH private key not found at ./ssh/id_ed25519'
+          echo 'Please create SSH keys and place them in the ./ssh directory:'
+          echo '  mkdir -p ./ssh'
+          echo '  ssh-keygen -t ed25519 -f ./ssh/id_ed25519 -N \"\"'
+          echo '  chmod 600 ./ssh/id_ed25519'
+          echo '  chmod 644 ./ssh/id_ed25519.pub'
+          exit 1
+        fi
+        echo 'SSH keys found and ready'
+      "
+    volumes:
+      - ./ssh:/etc/ssh:ro
+    restart: "no"

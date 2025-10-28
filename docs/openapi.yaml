@@ -1,0 +1,286 @@
+openapi: 3.0.3
+info:
+  title: VPN Rotator API
+  version: 1.0.0
+  description: |
+    REST API for the VPN Rotator service that manages rotating WireGuard VPN nodes on Hetzner Cloud.
+    
+    ## Features
+    - **On-demand provisioning**: Automatically provisions new VPN nodes when needed
+    - **Automatic rotation**: Rotates nodes on a configurable schedule (default: 24h)
+    - **Health monitoring**: Monitors node health and replaces unhealthy nodes
+    - **Circuit breaker protection**: Protects against cascading failures
+    - **Request tracing**: All requests include unique request IDs for debugging
+    
+    ## Client Integration
+    Clients should poll the `/api/v1/config/latest` endpoint every 15 minutes to detect node rotations.
+    The API uses standard HTTP status codes and includes detailed error information.
+    
+    ## Rate Limiting
+    No rate limiting is currently implemented, but clients should respect the recommended polling interval.
+    
+  contact:
+    name: VPN Rotator Support
+    url: https://github.com/chiquitav2/vpn-rotator
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://api.vpn-rotator.example.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Service health check
+      description: |
+        Returns the current health status of the VPN Rotator service.
+        This endpoint can be used for load balancer health checks and monitoring.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+              description: Unique request identifier
+              example: "req_health_123"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                success: true
+                data:
+                  status: "healthy"
+                  version: "1.0.0"
+        '500':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/circuit-breakers:
+    get:
+      tags:
+        - Monitoring
+      summary: Circuit breaker status
+      description: |
+        Returns the current status of all circuit breakers in the system.
+        This endpoint is useful for monitoring and debugging circuit breaker states.
+        
+        **Note**: This endpoint is only available when circuit breaker monitoring is enabled.
+      operationId: getCircuitBreakerStatus
+      security: []
+      responses:
+        '200':
+          description: Circuit breaker status retrieved successfully
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+              description: Unique request identifier
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CircuitBreakerResponse"
+        '404':
+          description: Circuit breaker monitoring not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/config/latest:
+    get:
+      tags:
+        - Configuration
+      summary: Get latest active VPN node configuration
+      description: |
+        Returns the connection details for the currently active WireGuard node.
+        If no node exists, triggers on-demand provisioning (FR-9, FR-20).
+        Clients should poll this endpoint every 15 minutes to detect rotations (FR-36).
+      operationId: getLatestConfig
+      security: [ ]  # No authentication required for MVP (NFR-4)
+      responses:
+        '200':
+          description: Active node configuration found
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+              description: Unique request identifier for tracing and debugging
+              example: "req_abc123xyz"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigSuccessResponse"
+              example:
+                success: true
+                data:
+                  server_public_key: "wE5pZXJ0aW9uMjAyNS0wMS0xNVQxMDozMDowMFo="
+                  server_ip: "192.0.2.1"
+                  port: 51820        '503':
+          description: |
+            No active node available, provisioning in progress.
+            Client should retry after the specified delay (typically 2-5 minutes for node provisioning).
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+              description: Unique request identifier for tracing and debugging
+              example: "req_ghi789rst"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisioningResponse"
+              example:
+                status: "provisioning"
+                message: "VPN node is being provisioned"
+                estimated_wait_seconds: 120
+                retry_after_seconds: 30
+
+        '500':
+          description: Internal server error
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+              description: Unique request identifier for tracing and debugging
+              example: "req_jkl012mno"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                config_error:
+                  summary: Failed to retrieve VPN configuration
+                  value:
+                    success: false
+                    error:
+                      code: "config_error"
+                      message: "Failed to retrieve VPN configuration"
+                      request_id: "req_abc123xyz"
+                internal_error:
+                  summary: Internal server error (panic recovery)
+                  value:
+                    success: false
+                    error:
+                      code: "internal_error"
+                      message: "An internal server error occurred"
+                      request_id: "req_def456uvw"
+
+components:
+  schemas:
+    SuccessResponse:
+      type: object
+      required:
+        - success
+        - data
+        - request_id
+      properties:
+        success:
+          type: boolean
+          description: Always true for successful responses
+          enum: [true]
+          example: true
+        data:
+          $ref: "#/components/schemas/NodeConfig"
+        request_id:
+          type: string
+          description: Unique request identifier for tracing and debugging
+          example: "req_abc123xyz"
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+        - request_id
+      properties:
+        success:
+          type: boolean
+          description: Always false for error responses
+          enum: [false]
+          example: false
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              example: "DATABASE_ERROR"
+            message:
+              type: string
+              description: Human-readable error message
+              example: "Internal database error"
+            details:
+              type: string
+              description: Additional error details (optional)
+              example: "Failed to query node state"
+        request_id:
+          type: string
+          description: Unique request identifier for tracing and debugging
+          example: "req_abc123xyz"
+
+    NodeConfig:
+      type: object
+      required:
+        - version
+        - server_public_key
+        - server_ip
+        - server_port
+        - updated_at
+        - rotation_scheduled
+      properties:
+        version:
+          type: string
+          description: API version for client compatibility checking
+          enum: [ "v1" ]
+          example: "v1"
+        server_public_key:
+          type: string
+          description: WireGuard server public key (base64 encoded, 44 chars)
+          pattern: "^[A-Za-z0-9+/]{43}=$"
+          minLength: 44
+          maxLength: 44
+          example: "wE5pZXJ0aW9uMjAyNS0wMS0xNVQxMDozMDowMFo="
+        server_ip:
+          type: string
+          description: Public IPv4 address of the VPN server
+          format: ipv4
+          example: "192.0.2.1"
+        server_port:
+          type: integer
+          description: WireGuard server port (UDP)
+          minimum: 1
+          maximum: 65535
+          example: 51820
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when this configuration was last updated (ISO 8601)
+          example: "2025-01-15T10:30:00Z"
+        rotation_scheduled:
+          type: boolean
+          description: |
+            If true, this node is scheduled for rotation within the grace period (FR-7).
+            Clients should continue polling to detect the new node.
+          example: false

@@ -1,0 +1,49 @@
+# Binaries
+/cmd/rotator/rotator
+/cmd/connector/vpn-rotator
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace file
+go.work
+
+# Dependencies
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+/data/*.db
+/data/*.db-shm
+/data/*.db-wal
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Build artifacts
+/dist/
+/build/
+
+# Coverage
+coverage.txt
+coverage.html
