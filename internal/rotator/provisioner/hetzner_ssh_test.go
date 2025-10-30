@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
 func TestHetzner_readSSHPublicKeys(t *testing.T) {
@@ -133,13 +135,14 @@ func TestHetzner_generateCloudInitWithSSHKeys(t *testing.T) {
 	}
 
 	// Generate test keys
-	keys, err := GenerateKeyPair()
+	keys, err := crypto.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("Failed to generate keys: %v", err)
 	}
 
 	// Generate cloud-init
 	cloudInit, err := h.generateCloudInit(keys)
+	t.Logf("Generated cloud-init:\n%s", cloudInit)
 	if err != nil {
 		t.Fatalf("Failed to generate cloud-init: %v", err)
 	}

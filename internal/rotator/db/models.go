@@ -10,15 +10,37 @@ import (
 )
 
 type Node struct {
-	ID               string       `json:"id"`
-	IpAddress        string       `json:"ip_address"`
-	ServerPublicKey  string       `json:"server_public_key"`
-	Port             int64        `json:"port"`
-	Status           string       `json:"status"`
-	Version          int64        `json:"version"`
-	CreatedAt        time.Time    `json:"created_at"`
-	UpdatedAt        time.Time    `json:"updated_at"`
-	DestroyAt        sql.NullTime `json:"destroy_at"`
-	LastHandshakeAt  sql.NullTime `json:"last_handshake_at"`
-	ConnectedClients int64        `json:"connected_clients"`
+	ID               string         `json:"id"`
+	ServerID         sql.NullString `json:"server_id"`
+	IpAddress        string         `json:"ip_address"`
+	ServerPublicKey  string         `json:"server_public_key"`
+	Port             int64          `json:"port"`
+	Status           string         `json:"status"`
+	Version          int64          `json:"version"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	DestroyAt        sql.NullTime   `json:"destroy_at"`
+	LastHandshakeAt  sql.NullTime   `json:"last_handshake_at"`
+	ConnectedClients int64          `json:"connected_clients"`
+}
+
+type NodeSubnet struct {
+	NodeID       string    `json:"node_id"`
+	SubnetCidr   string    `json:"subnet_cidr"`
+	GatewayIp    string    `json:"gateway_ip"`
+	IpRangeStart string    `json:"ip_range_start"`
+	IpRangeEnd   string    `json:"ip_range_end"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type Peer struct {
+	ID              string         `json:"id"`
+	NodeID          string         `json:"node_id"`
+	PublicKey       string         `json:"public_key"`
+	AllocatedIp     string         `json:"allocated_ip"`
+	PresharedKey    sql.NullString `json:"preshared_key"`
+	Status          string         `json:"status"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	LastHandshakeAt sql.NullTime   `json:"last_handshake_at"`
 }

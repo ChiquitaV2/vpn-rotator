@@ -33,9 +33,9 @@ write_files:
       # Server's private key (unique per node)
       PrivateKey = {{.ServerPrivateKey}}
       
-      # Internal VPN subnet (10.8.0.0/24)
-      # Server gets .1, clients get .2-.254
-      Address = 10.8.0.1/24
+      # Internal VPN subnet (dynamically allocated per node)
+      # Gateway IP for this node's subnet
+      Address = {{.GatewayIP}}/24
       
       # Listen on all interfaces, UDP port 51820
       ListenPort = 51820
@@ -117,109 +117,12 @@ runcmd:
   # Verify WireGuard is running
   - wg show wg0
 
-  # Set up a simple health check endpoint
-  - |
-    cat > /usr/local/bin/health-server.py << 'EOF'
-    #!/usr/bin/env python3
-    import http.server
-    import socketserver
-    import subprocess
-    import json
-    from datetime import datetime
-    
-    class HealthHandler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == '/health':
-                try:
-                    # Check if WireGuard interface is up
-                    result = subprocess.run(['wg', 'show', 'wg0'], 
-                                          capture_output=True, text=True, timeout=5)
-                    if result.returncode == 1:
-                        self.send_response(200)
-                        self.send_header('Content-type', 'application/json')
-                        self.end_headers()
-                        response = {
-                            'status': 'healthy',
-                            'timestamp': datetime.utcnow().isoformat(),
-                            'service': 'wireguard'
-                        }
-                        self.wfile.write(json.dumps(response).encode())
-                    else:
-                        self.send_response(503)
-                        self.send_header('Content-type', 'application/json')
-                        self.end_headers()
-                        response = {
-                            'status': 'unhealthy',
-                            'timestamp': datetime.utcnow().isoformat(),
-                            'error': 'WireGuard interface not found'
-                        }
-                        self.wfile.write(json.dumps(response).encode())
-                except Exception as e:
-                    self.send_response(500)
-                    self.send_header('Content-type', 'application/json')
-                    self.end_headers()
-                    response = {
-                        'status': 'error',
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'error': str(e)
-                    }
-                    self.wfile.write(json.dumps(response).encode())
-            else:
-                self.send_response(404)
-                self.end_headers()
-    
-        def log_message(self, format, *args):
-            # Suppress access logs for privacy
-            pass
-    
-    if __name__ == '__main__':
-        PORT = 8080
-        with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
-            httpd.serve_forever()
-    EOF
-
-  # Make health server executable
-  - chmod +x /usr/local/bin/health-server.py
-
-  # Create systemd service for health server
-  - |
-    cat > /etc/systemd/system/health-server.service << 'EOF'
-    [Unit]
-    Description=VPN Health Check Server
-    After=network.target wg-quick@wg0.service
-    Requires=wg-quick@wg0.service
-    
-    [Service]
-    Type=simple
-    User=nobody
-    Group=nogroup
-    ExecStart=/usr/local/bin/health-server.py
-    Restart=always
-    RestartSec=5
-    
-    [Install]
-    WantedBy=multi-user.target
-    EOF
-
-  # Allow health check port through firewall
-  - ufw allow 8080/tcp comment 'Health check endpoint'
-  - ufw reload
-
-  - systemctl start wg-quick@wg0
-
-  # Enable and start health server
-  - systemctl enable health-server
-  - systemctl start health-server
-
-  # Wait for health server to start
-  - sleep 3
-
   # Log completion (for debugging)
   - echo "WireGuard setup completed at $(date)" >> /var/log/wireguard-init.log
   - |
     echo "Public key: $(cat /etc/wireguard/publickey)" >> /var/log/wireguard-init.log
   - wg show wg0 >> /var/log/wireguard-init.log
-  - echo "Health server started on port 8080" >> /var/log/wireguard-init.log
+  - echo "WireGuard service is ready" >> /var/log/wireguard-init.log
 
 # Set timezone (optional)
 timezone: UTC
@@ -234,7 +137,7 @@ users:
     # Allow SSH access
     ssh_authorized_keys:
   { { - range .SSHPublicKeys } }
-- { { . } }
+- "{{ . }}"
   { { - end } }
 
 # SSH configuration

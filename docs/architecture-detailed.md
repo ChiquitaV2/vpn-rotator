@@ -8,10 +8,11 @@ VPN Rotator is a self-hosted system that automatically rotates WireGuard VPN nod
 
 ### Key Components
 
-1. **Rotator Service** - Core backend service managing node lifecycle
+1. **Rotator Service** - Core backend service managing node lifecycle and peer management
 2. **Connector Client** - CLI tool for client devices
-3. **Database** - SQLite for state persistence
+3. **Database** - SQLite for state persistence with peer and subnet management
 4. **Hetzner Cloud** - Infrastructure provider for WireGuard nodes
+5. **Peer Management System** - Comprehensive peer lifecycle management with IP allocation
 
 ## High-Level Architecture
 
@@ -59,31 +60,45 @@ graph TB
 ```mermaid
 graph LR
     subgraph "Rotator Service"
-        A["HTTP API<br/>Handlers + Middleware"]
+        A["HTTP API<br/>Peer Management Endpoints"]
         B["Scheduler<br/>Rotation & Cleanup"]
         C["Provisioner<br/>Hetzner API"]
-        D["Orchestrator<br/>State Management"]
+        D["Orchestrator<br/>Peer-Aware State Management"]
         E["Health Checker<br/>WireGuard Validation"]
         F["Config Loader<br/>YAML + ENV"]
         G["Enhanced Logger<br/>Structured Logging"]
+        H["Peer Manager<br/>Lifecycle & Database Ops"]
+        I["IP Manager<br/>Subnet & IP Allocation"]
+        J["Node Manager<br/>SSH & Peer Config"]
     end
     
     subgraph "Data Layer"
-        H["SQLite DB<br/>with Migrations"]
+        K["SQLite DB<br/>Nodes, Peers, Subnets"]
     end
     
     subgraph "External Services"
-        I["Hetzner Cloud<br/>API & VMs"]
-        J["Cloud Init<br/>Scripts"]
+        L["Hetzner Cloud<br/>API & VMs"]
+        M["Cloud Init<br/>Scripts"]
+        N["SSH Pool<br/>Node Connections"]
     end
     
     A --> D
+    A --> H
+    A --> I
+    A --> J
     B --> D
     D --> C
+    D --> H
+    D --> I
+    D --> J
     D --> E
-    D <--> H
-    C --> I
-    C --> J
+    H <--> K
+    I <--> K
+    J --> I
+    J --> N
+    D <--> K
+    C --> L
+    C --> M
     F --> A
     F --> D
     G --> A
@@ -91,8 +106,175 @@ graph LR
     
     style A fill:#FFC107,stroke:#FF8F00,color:#000
     style C fill:#2196F3,stroke:#0D47A1,color:#fff
-    style H fill:#9C27B0,stroke:#7B1FA2,color:#fff
+    style K fill:#9C27B0,stroke:#7B1FA2,color:#fff
     style G fill:#4CAF50,stroke:#388E3C,color:#fff
+    style H fill:#E91E63,stroke:#C2185B,color:#fff
+    style I fill:#00BCD4,stroke:#0097A7,color:#fff
+    style J fill:#FF5722,stroke:#D84315,color:#fff
+
+
+```
+
+## Peer Management Architecture
+
+```mermaid
+graph TB
+    subgraph "API Layer"
+        A1["POST /api/v1/connect<br/>Peer Connection"]
+        A2["DELETE /api/v1/disconnect<br/>Peer Removal"]
+        A3["GET /api/v1/peers<br/>Peer Listing"]
+        A4["GET /api/v1/peers/{id}<br/>Peer Details"]
+    end
+    
+    subgraph "Core Components"
+        B1["Orchestrator<br/>Node Selection & Load Balancing"]
+        B2["Peer Manager<br/>Database Operations & Validation"]
+        B3["IP Manager<br/>Subnet & IP Allocation"]
+        B4["Node Manager<br/>SSH Operations & WireGuard Config"]
+    end
+    
+    subgraph "Data Layer"
+        C1["peers table<br/>Peer configurations"]
+        C2["node_subnets table<br/>IP allocation tracking"]
+        C3["nodes table<br/>Node information"]
+    end
+    
+    subgraph "Infrastructure"
+        D1["SSH Pool<br/>Connection Management"]
+        D2["WireGuard Nodes<br/>Peer Configuration"]
+        D3["Circuit Breakers<br/>Resilience"]
+    end
+    
+    A1 --> B1
+    A1 --> B2
+    A1 --> B3
+    A1 --> B4
+    A2 --> B2
+    A2 --> B4
+    A3 --> B2
+    A4 --> B2
+    
+    B1 --> C3
+    B2 --> C1
+    B3 --> C2
+    B4 --> D1
+    B4 --> D2
+    
+    B1 --> B2
+    B1 --> B3
+    B2 --> B3
+    B4 --> B3
+    
+    D3 --> B2
+    D3 --> B3
+    D3 --> B4
+    
+    style A1 fill:#4CAF50,stroke:#388E3C,color:#fff
+    style A2 fill:#F44336,stroke:#D32F2F,color:#fff
+    style B1 fill:#2196F3,stroke:#0D47A1,color:#fff
+    style B2 fill:#E91E63,stroke:#C2185B,color:#fff
+    style B3 fill:#00BCD4,stroke:#0097A7,color:#fff
+    style B4 fill:#FF5722,stroke:#D84315,color:#fff
+```
+
+## Peer Connection Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as API Server
+    participant O as Orchestrator
+    participant PM as Peer Manager
+    participant IM as IP Manager
+    participant NM as Node Manager
+    participant DB as Database
+    participant Node as VPN Node
+    
+    Note over C,API: Peer Connection Request
+    C->>API: POST /api/v1/connect {public_key}
+    API->>API: Validate request & generate request ID
+    API->>O: SelectNodeForPeer()
+    O->>DB: Get active nodes & peer counts
+    O->>IM: GetAvailableIPCount(nodeID)
+    O-->>API: Selected nodeID
+    
+    API->>IM: AllocateClientIP(nodeID)
+    IM->>DB: Get node subnet & allocated IPs
+    IM->>IM: Find next available IP
+    IM-->>API: Allocated IP
+    
+    API->>PM: CreatePeer(nodeID, publicKey, IP)
+    PM->>DB: Insert peer record
+    PM-->>API: Peer configuration
+    
+    API->>O: GetNodeConfig(nodeID)
+    O->>DB: Get node details
+    O-->>API: Node IP address
+    
+    API->>NM: AddPeerToNode(nodeIP, peerConfig)
+    NM->>Node: SSH: wg set wg0 peer {publicKey} allowed-ips {IP}
+    Node-->>NM: Success
+    NM-->>API: Peer added
+    
+    API-->>C: {peer_id, server_config, client_ip}
+    
+    Note over C,Node: Rollback on failure
+    alt SSH Configuration Fails
+        API->>PM: RemovePeer(peerID)
+        API->>IM: ReleaseClientIP(nodeID, IP)
+        API-->>C: Error response
+    end
+```
+
+## IP Allocation Architecture
+
+```mermaid
+graph TB
+    subgraph "IP Management"
+        A["Base Network<br/>10.8.0.0/16"]
+        B["Node Subnets<br/>/24 per node"]
+        C["IP Allocation<br/>Per peer"]
+    end
+    
+    subgraph "Node 1 (10.8.1.0/24)"
+        D1["Gateway: 10.8.1.1"]
+        D2["Range: 10.8.1.2-254"]
+        D3["Peer 1: 10.8.1.2"]
+        D4["Peer 2: 10.8.1.3"]
+        D5["Available: 10.8.1.4-254"]
+    end
+    
+    subgraph "Node 2 (10.8.2.0/24)"
+        E1["Gateway: 10.8.2.1"]
+        E2["Range: 10.8.2.2-254"]
+        E3["Peer 1: 10.8.2.2"]
+        E4["Available: 10.8.2.3-254"]
+    end
+    
+    subgraph "Database Tracking"
+        F1["node_subnets table<br/>Subnet allocations"]
+        F2["peers table<br/>IP assignments"]
+    end
+    
+    A --> B
+    B --> D1
+    B --> E1
+    D2 --> D3
+    D2 --> D4
+    D2 --> D5
+    E2 --> E3
+    E2 --> E4
+    
+    D1 --> F1
+    E1 --> F1
+    D3 --> F2
+    D4 --> F2
+    E3 --> F2
+    
+    style A fill:#4CAF50,stroke:#388E3C,color:#fff
+    style B fill:#2196F3,stroke:#0D47A1,color:#fff
+    style F1 fill:#9C27B0,stroke:#7B1FA2,color:#fff
+    style F2 fill:#FF5722,stroke:#D84315,color:#fff
 ```
 
 ## Node Lifecycle Flow

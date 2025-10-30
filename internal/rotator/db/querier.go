@@ -18,23 +18,50 @@ type Querier interface {
 	BeginRotation(ctx context.Context, arg BeginRotationParams) error
 	// Cancel scheduled destruction (FR-13)
 	CancelNodeDestruction(ctx context.Context, arg CancelNodeDestructionParams) error
+	// Check if an IP address is already allocated
+	CheckIPConflict(ctx context.Context, allocatedIp string) (int64, error)
+	// Check if a public key is already in use
+	CheckPublicKeyConflict(ctx context.Context, publicKey string) (int64, error)
 	// ============================================================================
 	// MIGRATION HELPERS
 	// ============================================================================
 	// DANGEROUS: Delete all nodes (for testing/reset only)
 	CleanupAllNodes(ctx context.Context) error
+	// Count active peers for a specific node
+	CountActivePeersByNode(ctx context.Context, nodeID string) (int64, error)
+	// Count peers for a specific node
+	CountPeersByNode(ctx context.Context, nodeID string) (int64, error)
 	// ----------------------------------------------------------------------------
 	// Node Creation & Updates
 	// ----------------------------------------------------------------------------
 	// Create a new node (FR-3, FR-9)
 	CreateNode(ctx context.Context, arg CreateNodeParams) (Node, error)
+	// Create a new node subnet allocation
+	CreateNodeSubnet(ctx context.Context, arg CreateNodeSubnetParams) (NodeSubnet, error)
+	// ----------------------------------------------------------------------------
+	// Peer Creation & Updates
+	// ----------------------------------------------------------------------------
+	// Create a new peer
+	CreatePeer(ctx context.Context, arg CreatePeerParams) (Peer, error)
 	// Permanently delete a node (FR-8, FR-25)
 	DeleteNode(ctx context.Context, id string) error
+	// Delete a node subnet
+	DeleteNodeSubnet(ctx context.Context, nodeID string) error
+	// Delete a peer
+	DeletePeer(ctx context.Context, id string) error
+	// Delete all peers for a specific node
+	DeletePeersByNode(ctx context.Context, nodeID string) error
 	// Get the currently active node (FR-17)
 	// Returns the most recently created active node to handle transition edge cases
 	GetActiveNode(ctx context.Context) (Node, error)
+	// Get all node subnets
+	GetAllNodeSubnets(ctx context.Context) ([]NodeSubnet, error)
 	// Get all nodes (for debugging/admin)
 	GetAllNodes(ctx context.Context) ([]Node, error)
+	// Get all peers
+	GetAllPeers(ctx context.Context) ([]Peer, error)
+	// Get all allocated IPs for a specific node
+	GetAllocatedIPsByNode(ctx context.Context, nodeID string) ([]string, error)
 	// Get schema version for migrations
 	GetDatabaseVersion(ctx context.Context) (string, error)
 	// Get nodes with no activity for idle timeout period (FR-12)
@@ -42,6 +69,8 @@ type Querier interface {
 	// 1. No clients connected, OR
 	// 2. Last handshake was more than idle_minutes ago
 	GetIdleNodes(ctx context.Context, dollar_1 sql.NullString) ([]Node, error)
+	// Get peers that have been inactive for a specified duration
+	GetInactivePeers(ctx context.Context, dollar_1 sql.NullString) ([]Peer, error)
 	// Get the most recently created node regardless of status
 	GetLatestNode(ctx context.Context) (Node, error)
 	// ----------------------------------------------------------------------------
@@ -49,6 +78,8 @@ type Querier interface {
 	// ----------------------------------------------------------------------------
 	// Get a specific node by ID
 	GetNode(ctx context.Context, id string) (Node, error)
+	// Get a specific node by IP address
+	GetNodeByIP(ctx context.Context, ipAddress string) (Node, error)
 	// ----------------------------------------------------------------------------
 	// Health & Statistics
 	// ----------------------------------------------------------------------------
@@ -57,6 +88,13 @@ type Querier interface {
 	// Get node with lock for update (use in transaction)
 	// SQLite doesn't have SELECT FOR UPDATE, but this documents intent
 	GetNodeForUpdate(ctx context.Context, id string) (Node, error)
+	// ----------------------------------------------------------------------------
+	// Node Subnet Queries
+	// ----------------------------------------------------------------------------
+	// Get subnet information for a specific node
+	GetNodeSubnet(ctx context.Context, nodeID string) (NodeSubnet, error)
+	// Get node subnet by CIDR
+	GetNodeSubnetBySubnetCIDR(ctx context.Context, subnetCidr string) (NodeSubnet, error)
 	// Get all nodes with a specific status
 	GetNodesByStatus(ctx context.Context, status string) ([]Node, error)
 	// ----------------------------------------------------------------------------
@@ -72,8 +110,31 @@ type Querier interface {
 	// Get nodes stuck in non-terminal states (FR-25)
 	// Provisioning for >1 hour or destroying for >1 hour
 	GetOrphanedNodes(ctx context.Context) ([]Node, error)
+	// ============================================================================
+	// PEER MANAGEMENT QUERIES
+	// ============================================================================
+	// ----------------------------------------------------------------------------
+	// Peer Retrieval
+	// ----------------------------------------------------------------------------
+	// Get a specific peer by ID
+	GetPeer(ctx context.Context, id string) (Peer, error)
+	// Get a peer by public key
+	GetPeerByPublicKey(ctx context.Context, publicKey string) (Peer, error)
+	// Get peer statistics across all nodes
+	GetPeerStatistics(ctx context.Context) (GetPeerStatisticsRow, error)
+	// Get all peers for a specific node
+	GetPeersByNode(ctx context.Context, nodeID string) ([]Peer, error)
+	// Get all peers with a specific status
+	GetPeersByStatus(ctx context.Context, status string) ([]Peer, error)
+	// ----------------------------------------------------------------------------
+	// Peer Management Operations
+	// ----------------------------------------------------------------------------
+	// Get active peers that need to be migrated from a node
+	GetPeersForMigration(ctx context.Context, nodeID string) ([]Peer, error)
 	// Sum of all connected clients across all nodes
 	GetTotalConnectedClients(ctx context.Context) (interface{}, error)
+	// Get all used subnet CIDRs
+	GetUsedSubnetCIDRs(ctx context.Context) ([]string, error)
 	// Quick check if any active node exists (FR-17, FR-20)
 	HasActiveNode(ctx context.Context) (int64, error)
 	// Transition node from provisioning to active (FR-6)
@@ -82,9 +143,17 @@ type Querier interface {
 	ScheduleNodeDestruction(ctx context.Context, arg ScheduleNodeDestructionParams) error
 	// Update last handshake time and client count (FR-10, FR-11)
 	UpdateNodeActivity(ctx context.Context, arg UpdateNodeActivityParams) error
+	// Update node IP address and public key while keeping provisioning status
+	UpdateNodeDetails(ctx context.Context, arg UpdateNodeDetailsParams) error
 	// Update node status with optimistic locking (FR-16)
 	// Returns error if version doesn't match (concurrent modification)
 	UpdateNodeStatus(ctx context.Context, arg UpdateNodeStatusParams) error
+	// Update peer last handshake time
+	UpdatePeerLastHandshake(ctx context.Context, arg UpdatePeerLastHandshakeParams) error
+	// Move a peer to a different node (for migration)
+	UpdatePeerNode(ctx context.Context, arg UpdatePeerNodeParams) error
+	// Update peer status
+	UpdatePeerStatus(ctx context.Context, arg UpdatePeerStatusParams) error
 }
 
 var _ Querier = (*Queries)(nil)

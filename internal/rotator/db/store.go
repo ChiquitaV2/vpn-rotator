@@ -83,16 +83,19 @@ func NewStore(config *Config) (Store, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Run migrations
-	if err := runMigrations(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
-	return &SQLStore{
+	// Create store instance
+	store := &SQLStore{
 		Queries: New(db),
 		db:      db,
-	}, nil
+	}
+
+	// Initialize schema
+	if err := store.SetupSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to setup database schema: %w", err)
+	}
+
+	return store, nil
 }
 
 // NewStoreFromDB creates a new Store from an existing database connection
@@ -102,6 +105,33 @@ func NewStoreFromDB(db *sql.DB) Store {
 		Queries: New(db),
 		db:      db,
 	}
+}
+
+// SetupSchema sets up the database schema
+func (s *SQLStore) SetupSchema() error {
+	// If key table already exists, assume schema is present
+	var name string
+	if err := s.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name = ?;", "peers").Scan(&name); err == nil {
+		return nil
+	} else if err != sql.ErrNoRows {
+		return fmt.Errorf("failed to check existing schema: %w", err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin schema transaction: %w", err)
+	}
+
+	if _, err := tx.Exec(ddl); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("failed to setup database schema: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit schema transaction: %w", err)
+	}
+
+	return nil
 }
 
 // BeginTx starts a new transaction
@@ -150,11 +180,4 @@ func (s *SQLStore) GetDB() *sql.DB {
 // Helper function to get duration from seconds
 func getDuration(seconds int) time.Duration {
 	return time.Duration(seconds) * time.Second
-}
-
-// Setup initializes the database schema (deprecated - use NewStore which handles migrations)
-// Kept for backward compatibility with tests
-func (s *SQLStore) Setup(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, ddl)
-	return err
 }

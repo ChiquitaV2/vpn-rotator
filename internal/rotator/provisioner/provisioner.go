@@ -2,12 +2,11 @@ package provisioner
 
 import (
 	"context"
-
-	"github.com/chiquitav2/vpn-rotator/internal/shared/models"
+	"net"
 )
 
 // Provisioner defines the interface for provisioning and destroying VPN nodes.
 type Provisioner interface {
-	ProvisionNode(ctx context.Context) (*models.Node, error)
+	ProvisionNodeWithSubnet(ctx context.Context, subnet *net.IPNet) (*Node, error)
 	DestroyNode(ctx context.Context, serverID string) error
 }

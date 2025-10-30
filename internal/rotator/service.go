@@ -15,22 +15,38 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/health"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/monitoring"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/models"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // OrchestratorInterface defines the interface for orchestrator operations
 type OrchestratorInterface interface {
-	GetLatestConfig(ctx context.Context) (*models.NodeConfig, error)
+	// Node lifecycle operations
 	ShouldRotate(ctx context.Context) (bool, error)
 	RotateNodes(ctx context.Context) error
 	CleanupNodes(ctx context.Context) error
 	GetNodesByStatus(ctx context.Context, status string) ([]db.Node, error)
 	DestroyNode(ctx context.Context, node db.Node) error
+	GetNodeConfig(ctx context.Context, nodeID string) (*nodemanager.NodeConfig, error)
+
+	// Peer management operations
+	SelectNodeForPeer(ctx context.Context) (string, error)
+	GetNodeLoadBalance(ctx context.Context) (map[string]int, error)
+	MigratePeersFromNode(ctx context.Context, sourceNodeID string, targetNodeID string) error
+
+	// Enhanced peer operations
+	CreatePeerOnOptimalNode(ctx context.Context, publicKey string, presharedKey *string) (*peermanager.PeerConfig, error)
+	RemovePeerFromSystem(ctx context.Context, peerID string) error
+	GetPeerStatistics(ctx context.Context) (*peermanager.PeerStatistics, error)
+	CleanupInactivePeers(ctx context.Context, inactiveMinutes int) error
+	ValidateNodePeerCapacity(ctx context.Context, nodeID string, additionalPeers int) error
+	SyncNodePeers(ctx context.Context, nodeID string) error
 }
 
 // SchedulerInterface defines the interface for scheduler operations
@@ -59,7 +75,6 @@ type Service struct {
 
 	// Circuit breaker instances for monitoring
 	provisionerCB *provisioner.CircuitBreaker
-	databaseCB    *db.CircuitBreakerStore
 	healthCB      *health.CircuitBreakerHealthChecker
 
 	// Internal state for lifecycle management
@@ -111,12 +126,8 @@ func (s *Service) initializeComponents() error {
 		return fmt.Errorf("failed to initialize database store: %w", err)
 	}
 
-	// Wrap database store with circuit breaker for resilience
-	s.logger.Debug("initializing database circuit breaker")
-	dbCircuitBreakerConfig := db.DefaultCircuitBreakerConfig()
-	s.databaseCB = db.NewCircuitBreakerStore(baseStore, dbCircuitBreakerConfig, s.logger)
-	s.store = s.databaseCB
-	s.logger.Debug("database store with circuit breaker initialized successfully")
+	s.store = baseStore
+	s.logger.Debug("database store with initialized successfully")
 
 	// 2. Initialize provisioner (infrastructure dependency)
 	s.logger.Debug("initializing provisioner")
@@ -159,7 +170,15 @@ func (s *Service) initializeComponents() error {
 		return fmt.Errorf("failed to read SSH private key from %s: %w", s.config.Hetzner.SSHPrivateKeyPath, err)
 	}
 
-	// 5. Initialize node manager (depends on store, provisioner, health checker)
+	// 5. Initialize IP manager (depends on store)
+	s.logger.Debug("initializing IP manager")
+	ipManager, err := ipmanager.NewIPManager(s.store, s.logger, nil) // Use default config
+	if err != nil {
+		return fmt.Errorf("failed to initialize IP manager: %w", err)
+	}
+	s.logger.Debug("IP manager initialized successfully")
+
+	// 6. Initialize node manager (depends on store, provisioner, health checker, IP manager)
 	s.logger.Debug("initializing node manager")
 	nodeManager := nodemanager.New(
 		s.store,
@@ -167,16 +186,26 @@ func (s *Service) initializeComponents() error {
 		healthChecker,
 		s.logger,
 		string(privateKeyBytes),
+		ipManager,
 	)
 	s.logger.Debug("node manager initialized successfully")
 
-	// 6. Initialize orchestrator (depends on store, node manager)
+	// 7. Initialize peer manager (depends on store and repository)
+	s.logger.Debug("initializing peer manager")
+	// Create a logger wrapper for peer manager
+	peerLogger := &logger.Logger{Logger: s.logger}
+	// Create repository manager for peermanager
+	//reposManager := repository.NewRepositoryManager(s.store, peerLogger)
+	peerManager := peermanager.NewManager(s.store, peerLogger)
+	s.logger.Debug("peer manager initialized successfully")
+
+	// 8. Initialize orchestrator (depends on store, node manager, peer manager, IP manager)
 	s.logger.Debug("initializing orchestrator")
-	orch := orchestrator.New(s.store, nodeManager, s.logger)
+	orch := orchestrator.New(s.store, nodeManager, peerManager, ipManager, s.logger)
 	s.orchestrator = orch
 	s.logger.Debug("orchestrator initialized successfully")
 
-	// 7. Initialize scheduler manager (depends on orchestrator)
+	// 9. Initialize scheduler manager (depends on orchestrator)
 	s.logger.Debug("initializing scheduler manager")
 	schedulerManager := scheduler.NewManager(
 		s.config.Scheduler.RotationInterval,
@@ -189,12 +218,12 @@ func (s *Service) initializeComponents() error {
 	s.scheduler = schedulerManager
 	s.logger.Debug("scheduler manager initialized successfully")
 
-	// 8. Initialize circuit breaker monitoring
+	// 10. Initialize circuit breaker monitoring
 	s.logger.Debug("initializing circuit breaker monitoring")
-	cbMonitor := monitoring.NewCircuitBreakerMonitor(s.provisionerCB, s.databaseCB, s.healthCB)
+	cbMonitor := monitoring.NewCircuitBreakerMonitor(s.provisionerCB, s.healthCB)
 	s.logger.Debug("circuit breaker monitoring initialized successfully")
 
-	// 9. Initialize API server (depends on orchestrator and monitoring)
+	// 11. Initialize API server (depends on orchestrator, peer manager, IP manager, node manager, and monitoring)
 	s.logger.Debug("initializing API server")
 	apiServer := api.NewServerWithMonitoring(
 		api.ServerConfig{
@@ -202,6 +231,9 @@ func (s *Service) initializeComponents() error {
 			CORSOrigins: []string{"*"}, // TODO: Make configurable
 		},
 		s.orchestrator,
+		peerManager,
+		ipManager,
+		nodeManager,
 		cbMonitor,
 		s.logger,
 	)

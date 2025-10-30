@@ -5,10 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
-
-	"github.com/chiquitav2/vpn-rotator/internal/shared/models"
 )
 
 // CircuitState represents the state of the circuit breaker.
@@ -76,8 +75,8 @@ func NewCircuitBreaker(provisioner Provisioner, config *CircuitBreakerConfig, lo
 	}
 }
 
-// ProvisionNode provisions a node with retry logic and circuit breaker protection.
-func (cb *CircuitBreaker) ProvisionNode(ctx context.Context) (*models.Node, error) {
+// ProvisionNodeWithSubnet provisions a node with specific subnet configuration using circuit breaker pattern.
+func (cb *CircuitBreaker) ProvisionNodeWithSubnet(ctx context.Context, subnet *net.IPNet) (*Node, error) {
 	// Check circuit state
 	if !cb.allowRequest() {
 		cb.logger.Warn("Circuit breaker is open, rejecting provision request")
@@ -95,10 +94,11 @@ func (cb *CircuitBreaker) ProvisionNode(ctx context.Context) (*models.Node, erro
 			}
 			backoff := cb.backoffDurations[backoffIndex]
 
-			cb.logger.Info("Retrying provision after backoff",
+			cb.logger.Info("Retrying provision with subnet after backoff",
 				slog.Int("attempt", attempt+1),
 				slog.Int("max_attempts", cb.maxAttempts),
-				slog.Duration("backoff", backoff))
+				slog.Duration("backoff", backoff),
+				slog.String("subnet", subnet.String()))
 
 			select {
 			case <-time.After(backoff):
@@ -107,11 +107,12 @@ func (cb *CircuitBreaker) ProvisionNode(ctx context.Context) (*models.Node, erro
 			}
 		}
 
-		cb.logger.Info("Attempting to provision node",
+		cb.logger.Info("Attempting to provision node with subnet",
 			slog.Int("attempt", attempt+1),
-			slog.Int("max_attempts", cb.maxAttempts))
+			slog.Int("max_attempts", cb.maxAttempts),
+			slog.String("subnet", subnet.String()))
 
-		node, err := cb.provisioner.ProvisionNode(ctx)
+		node, err := cb.provisioner.ProvisionNodeWithSubnet(ctx, subnet)
 		if err == nil {
 			cb.onSuccess()
 			return node, nil
@@ -129,14 +130,15 @@ func (cb *CircuitBreaker) ProvisionNode(ctx context.Context) (*models.Node, erro
 			return nil, err
 		}
 
-		cb.logger.Warn("Provision attempt failed",
+		cb.logger.Warn("Provision attempt with subnet failed",
 			slog.Int("attempt", attempt+1),
-			slog.String("error", err.Error()))
+			slog.String("error", err.Error()),
+			slog.String("subnet", subnet.String()))
 	}
 
 	// All attempts exhausted
 	cb.onFailure()
-	return nil, fmt.Errorf("provisioning failed after %d attempts: %w", cb.maxAttempts, lastErr)
+	return nil, fmt.Errorf("provisioning with subnet failed after %d attempts: %w", cb.maxAttempts, lastErr)
 }
 
 // DestroyNode destroys a node (pass-through, no retry logic).

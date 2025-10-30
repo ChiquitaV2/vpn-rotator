@@ -1,0 +1,41 @@
+# VPN Rotator Configuration Example
+
+# Service configuration
+service:
+  shutdown_timeout: 30s
+
+# Logging configuration
+log:
+  level: info      # debug, info, warn, error
+  format: json     # json, text
+
+# API server configuration
+api:
+  listen_addr: ":8080"
+
+# Database configuration
+db:
+  path: "./data/rotator.db"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 300  # seconds
+
+# Scheduler configuration
+scheduler:
+  rotation_interval: 24h  # How often to rotate nodes
+  cleanup_interval: 1h    # How often to check for cleanup
+  cleanup_age: 2h         # Age before destroying nodes
+
+# Activity monitor configuration
+monitor:
+  interval: 30s           # How often to check node activity
+  ssh_user: root          # SSH user for connecting to nodes
+
+# Hetzner provider configuration
+hetzner:
+  api_token: ""                                    # Set via VPN_ROTATOR_HETZNER_API_TOKEN env var
+  server_types: [ "cx11", "cx21" ]                  # Server types to use
+  image: "ubuntu-22.04"                           # OS image
+  locations: [ "nbg1", "fsn1" ]                     # Datacenter locations
+  ssh_key: ""                                     # SSH public key content
+  ssh_private_key_path: "/path/to/private/key"    # Path to SSH private key

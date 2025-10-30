@@ -56,6 +56,30 @@ func (q *Queries) CancelNodeDestruction(ctx context.Context, arg CancelNodeDestr
 	return err
 }
 
+const checkIPConflict = `-- name: CheckIPConflict :one
+SELECT EXISTS(SELECT 1 FROM peers WHERE allocated_ip = ?) as ip_exists
+`
+
+// Check if an IP address is already allocated
+func (q *Queries) CheckIPConflict(ctx context.Context, allocatedIp string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, checkIPConflict, allocatedIp)
+	var ip_exists int64
+	err := row.Scan(&ip_exists)
+	return ip_exists, err
+}
+
+const checkPublicKeyConflict = `-- name: CheckPublicKeyConflict :one
+SELECT EXISTS(SELECT 1 FROM peers WHERE public_key = ?) as key_exists
+`
+
+// Check if a public key is already in use
+func (q *Queries) CheckPublicKeyConflict(ctx context.Context, publicKey string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, checkPublicKeyConflict, publicKey)
+	var key_exists int64
+	err := row.Scan(&key_exists)
+	return key_exists, err
+}
+
 const cleanupAllNodes = `-- name: CleanupAllNodes :exec
 
 DELETE FROM nodes
@@ -70,6 +94,30 @@ func (q *Queries) CleanupAllNodes(ctx context.Context) error {
 	return err
 }
 
+const countActivePeersByNode = `-- name: CountActivePeersByNode :one
+SELECT COUNT(*) as count FROM peers WHERE node_id = ? AND status = 'active'
+`
+
+// Count active peers for a specific node
+func (q *Queries) CountActivePeersByNode(ctx context.Context, nodeID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countActivePeersByNode, nodeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countPeersByNode = `-- name: CountPeersByNode :one
+SELECT COUNT(*) as count FROM peers WHERE node_id = ?
+`
+
+// Count peers for a specific node
+func (q *Queries) CountPeersByNode(ctx context.Context, nodeID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPeersByNode, nodeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createNode = `-- name: CreateNode :one
 
 INSERT INTO nodes (
@@ -81,7 +129,7 @@ INSERT INTO nodes (
     created_at
 )
 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    RETURNING id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients
+    RETURNING id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients
 `
 
 type CreateNodeParams struct {
@@ -107,6 +155,7 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 	var i Node
 	err := row.Scan(
 		&i.ID,
+		&i.ServerID,
 		&i.IpAddress,
 		&i.ServerPublicKey,
 		&i.Port,
@@ -117,6 +166,100 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 		&i.DestroyAt,
 		&i.LastHandshakeAt,
 		&i.ConnectedClients,
+	)
+	return i, err
+}
+
+const createNodeSubnet = `-- name: CreateNodeSubnet :one
+INSERT INTO node_subnets (
+    node_id,
+    subnet_cidr,
+    gateway_ip,
+    ip_range_start,
+    ip_range_end,
+    created_at
+)
+VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+RETURNING node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at
+`
+
+type CreateNodeSubnetParams struct {
+	NodeID       string `json:"node_id"`
+	SubnetCidr   string `json:"subnet_cidr"`
+	GatewayIp    string `json:"gateway_ip"`
+	IpRangeStart string `json:"ip_range_start"`
+	IpRangeEnd   string `json:"ip_range_end"`
+}
+
+// Create a new node subnet allocation
+func (q *Queries) CreateNodeSubnet(ctx context.Context, arg CreateNodeSubnetParams) (NodeSubnet, error) {
+	row := q.db.QueryRowContext(ctx, createNodeSubnet,
+		arg.NodeID,
+		arg.SubnetCidr,
+		arg.GatewayIp,
+		arg.IpRangeStart,
+		arg.IpRangeEnd,
+	)
+	var i NodeSubnet
+	err := row.Scan(
+		&i.NodeID,
+		&i.SubnetCidr,
+		&i.GatewayIp,
+		&i.IpRangeStart,
+		&i.IpRangeEnd,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createPeer = `-- name: CreatePeer :one
+
+INSERT INTO peers (
+    id,
+    node_id,
+    public_key,
+    allocated_ip,
+    preshared_key,
+    status,
+    created_at
+)
+VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+RETURNING id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+`
+
+type CreatePeerParams struct {
+	ID           string         `json:"id"`
+	NodeID       string         `json:"node_id"`
+	PublicKey    string         `json:"public_key"`
+	AllocatedIp  string         `json:"allocated_ip"`
+	PresharedKey sql.NullString `json:"preshared_key"`
+	Status       string         `json:"status"`
+}
+
+// ----------------------------------------------------------------------------
+// Peer Creation & Updates
+// ----------------------------------------------------------------------------
+// Create a new peer
+func (q *Queries) CreatePeer(ctx context.Context, arg CreatePeerParams) (Peer, error) {
+	row := q.db.QueryRowContext(ctx, createPeer,
+		arg.ID,
+		arg.NodeID,
+		arg.PublicKey,
+		arg.AllocatedIp,
+		arg.PresharedKey,
+		arg.Status,
+	)
+	var i Peer
+	err := row.Scan(
+		&i.ID,
+		&i.NodeID,
+		&i.PublicKey,
+		&i.AllocatedIp,
+		&i.PresharedKey,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastHandshakeAt,
 	)
 	return i, err
 }
@@ -131,8 +274,38 @@ func (q *Queries) DeleteNode(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteNodeSubnet = `-- name: DeleteNodeSubnet :exec
+DELETE FROM node_subnets WHERE node_id = ?
+`
+
+// Delete a node subnet
+func (q *Queries) DeleteNodeSubnet(ctx context.Context, nodeID string) error {
+	_, err := q.db.ExecContext(ctx, deleteNodeSubnet, nodeID)
+	return err
+}
+
+const deletePeer = `-- name: DeletePeer :exec
+DELETE FROM peers WHERE id = ?
+`
+
+// Delete a peer
+func (q *Queries) DeletePeer(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deletePeer, id)
+	return err
+}
+
+const deletePeersByNode = `-- name: DeletePeersByNode :exec
+DELETE FROM peers WHERE node_id = ?
+`
+
+// Delete all peers for a specific node
+func (q *Queries) DeletePeersByNode(ctx context.Context, nodeID string) error {
+	_, err := q.db.ExecContext(ctx, deletePeersByNode, nodeID)
+	return err
+}
+
 const getActiveNode = `-- name: GetActiveNode :one
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 WHERE status = 'active'
 ORDER BY created_at DESC
     LIMIT 1
@@ -145,6 +318,7 @@ func (q *Queries) GetActiveNode(ctx context.Context) (Node, error) {
 	var i Node
 	err := row.Scan(
 		&i.ID,
+		&i.ServerID,
 		&i.IpAddress,
 		&i.ServerPublicKey,
 		&i.Port,
@@ -159,8 +333,43 @@ func (q *Queries) GetActiveNode(ctx context.Context) (Node, error) {
 	return i, err
 }
 
+const getAllNodeSubnets = `-- name: GetAllNodeSubnets :many
+SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at FROM node_subnets ORDER BY created_at DESC
+`
+
+// Get all node subnets
+func (q *Queries) GetAllNodeSubnets(ctx context.Context) ([]NodeSubnet, error) {
+	rows, err := q.db.QueryContext(ctx, getAllNodeSubnets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NodeSubnet{}
+	for rows.Next() {
+		var i NodeSubnet
+		if err := rows.Scan(
+			&i.NodeID,
+			&i.SubnetCidr,
+			&i.GatewayIp,
+			&i.IpRangeStart,
+			&i.IpRangeEnd,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAllNodes = `-- name: GetAllNodes :many
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 ORDER BY created_at DESC
 `
 
@@ -176,6 +385,7 @@ func (q *Queries) GetAllNodes(ctx context.Context) ([]Node, error) {
 		var i Node
 		if err := rows.Scan(
 			&i.ID,
+			&i.ServerID,
 			&i.IpAddress,
 			&i.ServerPublicKey,
 			&i.Port,
@@ -190,6 +400,73 @@ func (q *Queries) GetAllNodes(ctx context.Context) ([]Node, error) {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAllPeers = `-- name: GetAllPeers :many
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
+ORDER BY created_at DESC
+`
+
+// Get all peers
+func (q *Queries) GetAllPeers(ctx context.Context) ([]Peer, error) {
+	rows, err := q.db.QueryContext(ctx, getAllPeers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Peer{}
+	for rows.Next() {
+		var i Peer
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.PublicKey,
+			&i.AllocatedIp,
+			&i.PresharedKey,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastHandshakeAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAllocatedIPsByNode = `-- name: GetAllocatedIPsByNode :many
+SELECT allocated_ip FROM peers WHERE node_id = ? ORDER BY allocated_ip
+`
+
+// Get all allocated IPs for a specific node
+func (q *Queries) GetAllocatedIPsByNode(ctx context.Context, nodeID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getAllocatedIPsByNode, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var allocated_ip string
+		if err := rows.Scan(&allocated_ip); err != nil {
+			return nil, err
+		}
+		items = append(items, allocated_ip)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -213,7 +490,7 @@ func (q *Queries) GetDatabaseVersion(ctx context.Context) (string, error) {
 }
 
 const getIdleNodes = `-- name: GetIdleNodes :many
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 WHERE status IN ('active', 'destroying')
   AND (
     connected_clients = 0
@@ -237,6 +514,7 @@ func (q *Queries) GetIdleNodes(ctx context.Context, dollar_1 sql.NullString) ([]
 		var i Node
 		if err := rows.Scan(
 			&i.ID,
+			&i.ServerID,
 			&i.IpAddress,
 			&i.ServerPublicKey,
 			&i.Port,
@@ -261,8 +539,52 @@ func (q *Queries) GetIdleNodes(ctx context.Context, dollar_1 sql.NullString) ([]
 	return items, nil
 }
 
+const getInactivePeers = `-- name: GetInactivePeers :many
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers
+WHERE status = 'active'
+  AND (
+    last_handshake_at IS NULL
+    OR datetime(last_handshake_at, '+' || ? || ' minutes') <= CURRENT_TIMESTAMP
+  )
+ORDER BY last_handshake_at ASC
+`
+
+// Get peers that have been inactive for a specified duration
+func (q *Queries) GetInactivePeers(ctx context.Context, dollar_1 sql.NullString) ([]Peer, error) {
+	rows, err := q.db.QueryContext(ctx, getInactivePeers, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Peer{}
+	for rows.Next() {
+		var i Peer
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.PublicKey,
+			&i.AllocatedIp,
+			&i.PresharedKey,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastHandshakeAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getLatestNode = `-- name: GetLatestNode :one
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 ORDER BY created_at DESC
     LIMIT 1
 `
@@ -273,6 +595,7 @@ func (q *Queries) GetLatestNode(ctx context.Context) (Node, error) {
 	var i Node
 	err := row.Scan(
 		&i.ID,
+		&i.ServerID,
 		&i.IpAddress,
 		&i.ServerPublicKey,
 		&i.Port,
@@ -289,7 +612,7 @@ func (q *Queries) GetLatestNode(ctx context.Context) (Node, error) {
 
 const getNode = `-- name: GetNode :one
 
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes WHERE id = ? LIMIT 1
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes WHERE id = ? LIMIT 1
 `
 
 // ----------------------------------------------------------------------------
@@ -301,6 +624,32 @@ func (q *Queries) GetNode(ctx context.Context, id string) (Node, error) {
 	var i Node
 	err := row.Scan(
 		&i.ID,
+		&i.ServerID,
+		&i.IpAddress,
+		&i.ServerPublicKey,
+		&i.Port,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DestroyAt,
+		&i.LastHandshakeAt,
+		&i.ConnectedClients,
+	)
+	return i, err
+}
+
+const getNodeByIP = `-- name: GetNodeByIP :one
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes WHERE ip_address = ? LIMIT 1
+`
+
+// Get a specific node by IP address
+func (q *Queries) GetNodeByIP(ctx context.Context, ipAddress string) (Node, error) {
+	row := q.db.QueryRowContext(ctx, getNodeByIP, ipAddress)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.ServerID,
 		&i.IpAddress,
 		&i.ServerPublicKey,
 		&i.Port,
@@ -349,7 +698,7 @@ func (q *Queries) GetNodeCount(ctx context.Context) (GetNodeCountRow, error) {
 }
 
 const getNodeForUpdate = `-- name: GetNodeForUpdate :one
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes WHERE id = ? LIMIT 1
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes WHERE id = ? LIMIT 1
 `
 
 // Get node with lock for update (use in transaction)
@@ -359,6 +708,7 @@ func (q *Queries) GetNodeForUpdate(ctx context.Context, id string) (Node, error)
 	var i Node
 	err := row.Scan(
 		&i.ID,
+		&i.ServerID,
 		&i.IpAddress,
 		&i.ServerPublicKey,
 		&i.Port,
@@ -373,8 +723,50 @@ func (q *Queries) GetNodeForUpdate(ctx context.Context, id string) (Node, error)
 	return i, err
 }
 
+const getNodeSubnet = `-- name: GetNodeSubnet :one
+
+SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at FROM node_subnets WHERE node_id = ? LIMIT 1
+`
+
+// ----------------------------------------------------------------------------
+// Node Subnet Queries
+// ----------------------------------------------------------------------------
+// Get subnet information for a specific node
+func (q *Queries) GetNodeSubnet(ctx context.Context, nodeID string) (NodeSubnet, error) {
+	row := q.db.QueryRowContext(ctx, getNodeSubnet, nodeID)
+	var i NodeSubnet
+	err := row.Scan(
+		&i.NodeID,
+		&i.SubnetCidr,
+		&i.GatewayIp,
+		&i.IpRangeStart,
+		&i.IpRangeEnd,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getNodeSubnetBySubnetCIDR = `-- name: GetNodeSubnetBySubnetCIDR :one
+SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at FROM node_subnets WHERE subnet_cidr = ? LIMIT 1
+`
+
+// Get node subnet by CIDR
+func (q *Queries) GetNodeSubnetBySubnetCIDR(ctx context.Context, subnetCidr string) (NodeSubnet, error) {
+	row := q.db.QueryRowContext(ctx, getNodeSubnetBySubnetCIDR, subnetCidr)
+	var i NodeSubnet
+	err := row.Scan(
+		&i.NodeID,
+		&i.SubnetCidr,
+		&i.GatewayIp,
+		&i.IpRangeStart,
+		&i.IpRangeEnd,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getNodesByStatus = `-- name: GetNodesByStatus :many
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 WHERE status = ?
 ORDER BY created_at DESC
 `
@@ -391,6 +783,7 @@ func (q *Queries) GetNodesByStatus(ctx context.Context, status string) ([]Node, 
 		var i Node
 		if err := rows.Scan(
 			&i.ID,
+			&i.ServerID,
 			&i.IpAddress,
 			&i.ServerPublicKey,
 			&i.Port,
@@ -417,7 +810,7 @@ func (q *Queries) GetNodesByStatus(ctx context.Context, status string) ([]Node, 
 
 const getNodesDueForRotation = `-- name: GetNodesDueForRotation :many
 
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 WHERE status = 'active'
   AND datetime(created_at, '+' || ? || ' hours') <= CURRENT_TIMESTAMP
   AND connected_clients > 0
@@ -439,6 +832,7 @@ func (q *Queries) GetNodesDueForRotation(ctx context.Context, dollar_1 sql.NullS
 		var i Node
 		if err := rows.Scan(
 			&i.ID,
+			&i.ServerID,
 			&i.IpAddress,
 			&i.ServerPublicKey,
 			&i.Port,
@@ -464,7 +858,7 @@ func (q *Queries) GetNodesDueForRotation(ctx context.Context, dollar_1 sql.NullS
 }
 
 const getNodesForDestruction = `-- name: GetNodesForDestruction :many
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 WHERE status = 'destroying'
   AND destroy_at IS NOT NULL
   AND destroy_at <= CURRENT_TIMESTAMP
@@ -482,6 +876,7 @@ func (q *Queries) GetNodesForDestruction(ctx context.Context) ([]Node, error) {
 		var i Node
 		if err := rows.Scan(
 			&i.ID,
+			&i.ServerID,
 			&i.IpAddress,
 			&i.ServerPublicKey,
 			&i.Port,
@@ -507,7 +902,7 @@ func (q *Queries) GetNodesForDestruction(ctx context.Context) ([]Node, error) {
 }
 
 const getNodesScheduledForDestruction = `-- name: GetNodesScheduledForDestruction :many
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 WHERE destroy_at IS NOT NULL
 ORDER BY destroy_at ASC
 `
@@ -524,6 +919,7 @@ func (q *Queries) GetNodesScheduledForDestruction(ctx context.Context) ([]Node, 
 		var i Node
 		if err := rows.Scan(
 			&i.ID,
+			&i.ServerID,
 			&i.IpAddress,
 			&i.ServerPublicKey,
 			&i.Port,
@@ -549,7 +945,7 @@ func (q *Queries) GetNodesScheduledForDestruction(ctx context.Context) ([]Node, 
 }
 
 const getOrphanedNodes = `-- name: GetOrphanedNodes :many
-SELECT id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes
 WHERE (
           (status = 'provisioning' AND datetime(created_at, '+1 hour') <= CURRENT_TIMESTAMP)
               OR (status = 'destroying' AND destroy_at IS NOT NULL AND datetime(destroy_at, '+1 hour') <= CURRENT_TIMESTAMP)
@@ -569,6 +965,7 @@ func (q *Queries) GetOrphanedNodes(ctx context.Context) ([]Node, error) {
 		var i Node
 		if err := rows.Scan(
 			&i.ID,
+			&i.ServerID,
 			&i.IpAddress,
 			&i.ServerPublicKey,
 			&i.Port,
@@ -579,6 +976,211 @@ func (q *Queries) GetOrphanedNodes(ctx context.Context) ([]Node, error) {
 			&i.DestroyAt,
 			&i.LastHandshakeAt,
 			&i.ConnectedClients,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPeer = `-- name: GetPeer :one
+
+
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers WHERE id = ? LIMIT 1
+`
+
+// ============================================================================
+// PEER MANAGEMENT QUERIES
+// ============================================================================
+// ----------------------------------------------------------------------------
+// Peer Retrieval
+// ----------------------------------------------------------------------------
+// Get a specific peer by ID
+func (q *Queries) GetPeer(ctx context.Context, id string) (Peer, error) {
+	row := q.db.QueryRowContext(ctx, getPeer, id)
+	var i Peer
+	err := row.Scan(
+		&i.ID,
+		&i.NodeID,
+		&i.PublicKey,
+		&i.AllocatedIp,
+		&i.PresharedKey,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastHandshakeAt,
+	)
+	return i, err
+}
+
+const getPeerByPublicKey = `-- name: GetPeerByPublicKey :one
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers WHERE public_key = ? LIMIT 1
+`
+
+// Get a peer by public key
+func (q *Queries) GetPeerByPublicKey(ctx context.Context, publicKey string) (Peer, error) {
+	row := q.db.QueryRowContext(ctx, getPeerByPublicKey, publicKey)
+	var i Peer
+	err := row.Scan(
+		&i.ID,
+		&i.NodeID,
+		&i.PublicKey,
+		&i.AllocatedIp,
+		&i.PresharedKey,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastHandshakeAt,
+	)
+	return i, err
+}
+
+const getPeerStatistics = `-- name: GetPeerStatistics :one
+SELECT
+    COUNT(*) as total_peers,
+    SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_peers,
+    SUM(CASE WHEN status = 'disconnected' THEN 1 ELSE 0 END) as disconnected_peers,
+    SUM(CASE WHEN status = 'removing' THEN 1 ELSE 0 END) as removing_peers
+FROM peers
+`
+
+type GetPeerStatisticsRow struct {
+	TotalPeers        int64           `json:"total_peers"`
+	ActivePeers       sql.NullFloat64 `json:"active_peers"`
+	DisconnectedPeers sql.NullFloat64 `json:"disconnected_peers"`
+	RemovingPeers     sql.NullFloat64 `json:"removing_peers"`
+}
+
+// Get peer statistics across all nodes
+func (q *Queries) GetPeerStatistics(ctx context.Context) (GetPeerStatisticsRow, error) {
+	row := q.db.QueryRowContext(ctx, getPeerStatistics)
+	var i GetPeerStatisticsRow
+	err := row.Scan(
+		&i.TotalPeers,
+		&i.ActivePeers,
+		&i.DisconnectedPeers,
+		&i.RemovingPeers,
+	)
+	return i, err
+}
+
+const getPeersByNode = `-- name: GetPeersByNode :many
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
+WHERE node_id = ? 
+ORDER BY created_at DESC
+`
+
+// Get all peers for a specific node
+func (q *Queries) GetPeersByNode(ctx context.Context, nodeID string) ([]Peer, error) {
+	rows, err := q.db.QueryContext(ctx, getPeersByNode, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Peer{}
+	for rows.Next() {
+		var i Peer
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.PublicKey,
+			&i.AllocatedIp,
+			&i.PresharedKey,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastHandshakeAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPeersByStatus = `-- name: GetPeersByStatus :many
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
+WHERE status = ? 
+ORDER BY created_at DESC
+`
+
+// Get all peers with a specific status
+func (q *Queries) GetPeersByStatus(ctx context.Context, status string) ([]Peer, error) {
+	rows, err := q.db.QueryContext(ctx, getPeersByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Peer{}
+	for rows.Next() {
+		var i Peer
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.PublicKey,
+			&i.AllocatedIp,
+			&i.PresharedKey,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastHandshakeAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPeersForMigration = `-- name: GetPeersForMigration :many
+
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
+WHERE node_id = ? AND status = 'active'
+ORDER BY created_at ASC
+`
+
+// ----------------------------------------------------------------------------
+// Peer Management Operations
+// ----------------------------------------------------------------------------
+// Get active peers that need to be migrated from a node
+func (q *Queries) GetPeersForMigration(ctx context.Context, nodeID string) ([]Peer, error) {
+	rows, err := q.db.QueryContext(ctx, getPeersForMigration, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Peer{}
+	for rows.Next() {
+		var i Peer
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.PublicKey,
+			&i.AllocatedIp,
+			&i.PresharedKey,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastHandshakeAt,
 		); err != nil {
 			return nil, err
 		}
@@ -605,6 +1207,34 @@ func (q *Queries) GetTotalConnectedClients(ctx context.Context) (interface{}, er
 	var total_clients interface{}
 	err := row.Scan(&total_clients)
 	return total_clients, err
+}
+
+const getUsedSubnetCIDRs = `-- name: GetUsedSubnetCIDRs :many
+SELECT subnet_cidr FROM node_subnets ORDER BY subnet_cidr
+`
+
+// Get all used subnet CIDRs
+func (q *Queries) GetUsedSubnetCIDRs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, getUsedSubnetCIDRs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var subnet_cidr string
+		if err := rows.Scan(&subnet_cidr); err != nil {
+			return nil, err
+		}
+		items = append(items, subnet_cidr)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const hasActiveNode = `-- name: HasActiveNode :one
@@ -679,6 +1309,36 @@ func (q *Queries) UpdateNodeActivity(ctx context.Context, arg UpdateNodeActivity
 	return err
 }
 
+const updateNodeDetails = `-- name: UpdateNodeDetails :exec
+UPDATE nodes
+SET
+    server_id = ?,
+    ip_address = ?,
+    server_public_key = ?,
+    version = version + 1
+WHERE id = ? AND status = 'provisioning' AND version = ?
+`
+
+type UpdateNodeDetailsParams struct {
+	ServerID        sql.NullString `json:"server_id"`
+	IpAddress       string         `json:"ip_address"`
+	ServerPublicKey string         `json:"server_public_key"`
+	ID              string         `json:"id"`
+	Version         int64          `json:"version"`
+}
+
+// Update node IP address and public key while keeping provisioning status
+func (q *Queries) UpdateNodeDetails(ctx context.Context, arg UpdateNodeDetailsParams) error {
+	_, err := q.db.ExecContext(ctx, updateNodeDetails,
+		arg.ServerID,
+		arg.IpAddress,
+		arg.ServerPublicKey,
+		arg.ID,
+		arg.Version,
+	)
+	return err
+}
+
 const updateNodeStatus = `-- name: UpdateNodeStatus :exec
 UPDATE nodes
 SET
@@ -697,5 +1357,57 @@ type UpdateNodeStatusParams struct {
 // Returns error if version doesn't match (concurrent modification)
 func (q *Queries) UpdateNodeStatus(ctx context.Context, arg UpdateNodeStatusParams) error {
 	_, err := q.db.ExecContext(ctx, updateNodeStatus, arg.Status, arg.ID, arg.Version)
+	return err
+}
+
+const updatePeerLastHandshake = `-- name: UpdatePeerLastHandshake :exec
+UPDATE peers
+SET last_handshake_at = ?
+WHERE id = ?
+`
+
+type UpdatePeerLastHandshakeParams struct {
+	LastHandshakeAt sql.NullTime `json:"last_handshake_at"`
+	ID              string       `json:"id"`
+}
+
+// Update peer last handshake time
+func (q *Queries) UpdatePeerLastHandshake(ctx context.Context, arg UpdatePeerLastHandshakeParams) error {
+	_, err := q.db.ExecContext(ctx, updatePeerLastHandshake, arg.LastHandshakeAt, arg.ID)
+	return err
+}
+
+const updatePeerNode = `-- name: UpdatePeerNode :exec
+UPDATE peers
+SET node_id = ?, allocated_ip = ?
+WHERE id = ?
+`
+
+type UpdatePeerNodeParams struct {
+	NodeID      string `json:"node_id"`
+	AllocatedIp string `json:"allocated_ip"`
+	ID          string `json:"id"`
+}
+
+// Move a peer to a different node (for migration)
+func (q *Queries) UpdatePeerNode(ctx context.Context, arg UpdatePeerNodeParams) error {
+	_, err := q.db.ExecContext(ctx, updatePeerNode, arg.NodeID, arg.AllocatedIp, arg.ID)
+	return err
+}
+
+const updatePeerStatus = `-- name: UpdatePeerStatus :exec
+UPDATE peers
+SET status = ?
+WHERE id = ?
+`
+
+type UpdatePeerStatusParams struct {
+	Status string `json:"status"`
+	ID     string `json:"id"`
+}
+
+// Update peer status
+func (q *Queries) UpdatePeerStatus(ctx context.Context, arg UpdatePeerStatusParams) error {
+	_, err := q.db.ExecContext(ctx, updatePeerStatus, arg.Status, arg.ID)
 	return err
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/health"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/provisioner"
 )
@@ -12,19 +11,16 @@ import (
 // CircuitBreakerMonitor provides monitoring capabilities for circuit breakers.
 type CircuitBreakerMonitor struct {
 	provisionerCB *provisioner.CircuitBreaker
-	databaseCB    *db.CircuitBreakerStore
 	healthCB      *health.CircuitBreakerHealthChecker
 }
 
 // NewCircuitBreakerMonitor creates a new circuit breaker monitor.
 func NewCircuitBreakerMonitor(
 	provisionerCB *provisioner.CircuitBreaker,
-	databaseCB *db.CircuitBreakerStore,
 	healthCB *health.CircuitBreakerHealthChecker,
 ) *CircuitBreakerMonitor {
 	return &CircuitBreakerMonitor{
 		provisionerCB: provisionerCB,
-		databaseCB:    databaseCB,
 		healthCB:      healthCB,
 	}
 }
@@ -32,7 +28,6 @@ func NewCircuitBreakerMonitor(
 // CircuitBreakerStatus represents the status of all circuit breakers.
 type CircuitBreakerStatus struct {
 	Provisioner CircuitBreakerInfo `json:"provisioner"`
-	Database    CircuitBreakerInfo `json:"database"`
 	HealthCheck CircuitBreakerInfo `json:"health_check"`
 }
 
@@ -54,16 +49,6 @@ func (m *CircuitBreakerMonitor) GetStatus() CircuitBreakerStatus {
 			State:           provisionerState,
 			Metrics:         m.provisionerCB.GetMetrics(),
 			HealthIndicator: getHealthIndicator(provisionerState),
-		}
-	}
-
-	// Database circuit breaker
-	if m.databaseCB != nil {
-		databaseState := string(m.databaseCB.GetState())
-		status.Database = CircuitBreakerInfo{
-			State:           databaseState,
-			Metrics:         m.databaseCB.GetMetrics(),
-			HealthIndicator: getHealthIndicator(databaseState),
 		}
 	}
 
@@ -109,12 +94,10 @@ func (m *CircuitBreakerMonitor) Handler() http.HandlerFunc {
 		// Set HTTP status based on overall health
 		overallHealth := "healthy"
 		if status.Provisioner.HealthIndicator == "unhealthy" ||
-			status.Database.HealthIndicator == "unhealthy" ||
 			status.HealthCheck.HealthIndicator == "unhealthy" {
 			overallHealth = "unhealthy"
 			w.WriteHeader(http.StatusServiceUnavailable)
 		} else if status.Provisioner.HealthIndicator == "recovering" ||
-			status.Database.HealthIndicator == "recovering" ||
 			status.HealthCheck.HealthIndicator == "recovering" {
 			overallHealth = "recovering"
 			w.WriteHeader(http.StatusOK)

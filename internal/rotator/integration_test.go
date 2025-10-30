@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/models"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
@@ -84,8 +87,16 @@ type mockOrchestratorForScheduler struct {
 	deleteNodeCallCount  int
 }
 
-func (m *mockOrchestratorForScheduler) GetLatestConfig(ctx context.Context) (*models.NodeConfig, error) {
+func (m *mockOrchestratorForScheduler) GetNodeConfig(ctx context.Context, nodeID string) (*models.NodeConfig, error) {
 	return &models.NodeConfig{}, nil
+}
+
+func (m *mockOrchestratorForScheduler) SelectNodeForPeer(ctx context.Context) (string, error) {
+	return "mock-node-id", nil
+}
+
+func (m *mockOrchestratorForScheduler) GetNodeLoadBalance(ctx context.Context) (map[string]int, error) {
+	return map[string]int{"mock-node-id": 0}, nil
 }
 
 func (m *mockOrchestratorForScheduler) ShouldRotate(ctx context.Context) (bool, error) {
@@ -119,18 +130,34 @@ func TestOrchestratorWithNodeManager(t *testing.T) {
 	// Create logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Create IP manager for node manager
+	ipManager, err := ipmanager.NewIPManager(store, logger, nil)
+	if err != nil {
+		t.Fatalf("Failed to create IP manager: %v", err)
+	}
+
 	// Create real NodeManager with mocked dependencies
-	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
+
+	// Create peer manager
+	peerLogger := &logger.Logger{Logger: logger}
+	peerManager := peermanager.NewManager(store, peerLogger)
 
 	// Create real Orchestrator with real NodeManager
-	orch := orchestrator.New(store, nodeManager, logger)
+	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()
 
-	// Test GetLatestConfig when no active node exists - should provision a new one
-	config, err := orch.GetLatestConfig(ctx)
+	// Test SelectNodeForPeer when no active node exists - should provision a new one
+	nodeID, err := orch.SelectNodeForPeer(ctx)
 	if err != nil {
-		t.Fatalf("expected GetLatestConfig to succeed, got: %v", err)
+		t.Fatalf("expected SelectNodeForPeer to succeed, got: %v", err)
+	}
+
+	// Get the node config to verify it was created
+	config, err := orch.GetNodeConfig(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("expected GetNodeConfig to succeed, got: %v", err)
 	}
 
 	if config == nil {
@@ -164,18 +191,28 @@ func TestOrchestratorWithNodeManagerProvisionerError(t *testing.T) {
 	// Create logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Create IP manager for node manager
+	ipManager, err := ipmanager.NewIPManager(store, logger, nil)
+	if err != nil {
+		t.Fatalf("Failed to create IP manager: %v", err)
+	}
+
 	// Create real NodeManager with mocked dependencies
-	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
+
+	// Create peer manager
+	peerLogger := &logger.Logger{Logger: logger}
+	peerManager := peermanager.NewManager(store, peerLogger)
 
 	// Create real Orchestrator with real NodeManager
-	orch := orchestrator.New(store, nodeManager, logger)
+	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()
 
-	// Test GetLatestConfig when provisioner fails
-	_, err := orch.GetLatestConfig(ctx)
+	// Test SelectNodeForPeer when provisioner fails
+	_, err := orch.SelectNodeForPeer(ctx)
 	if err == nil {
-		t.Error("expected GetLatestConfig to fail when provisioner fails")
+		t.Error("expected SelectNodeForPeer to fail when provisioner fails")
 	}
 }
 
@@ -190,11 +227,21 @@ func TestOrchestratorWithNodeManagerCleanup(t *testing.T) {
 	// Create logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Create IP manager for node manager
+	ipManager, err := ipmanager.NewIPManager(store, logger, nil)
+	if err != nil {
+		t.Fatalf("Failed to create IP manager: %v", err)
+	}
+
 	// Create real NodeManager with mocked dependencies
-	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
+
+	// Create peer manager
+	peerLogger := &logger.Logger{Logger: logger}
+	peerManager := peermanager.NewManager(store, peerLogger)
 
 	// Create real Orchestrator with real NodeManager
-	orch := orchestrator.New(store, nodeManager, logger)
+	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()
 

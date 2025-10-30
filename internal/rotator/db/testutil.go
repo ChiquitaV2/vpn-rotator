@@ -22,11 +22,11 @@ func NewTestDB(t *testing.T) (*sql.DB, Store) {
 	// Set connection pool to 1 for consistent testing
 	db.SetMaxOpenConns(1)
 
-	// Initialize schema using the new store
+	// Initialize schema using the store's Setup method
 	store := NewStoreFromDB(db)
-	if err := store.(*SQLStore).Setup(context.Background()); err != nil {
+	if _, err = db.ExecContext(context.Background(), ddl); err != nil {
 		db.Close()
-		t.Fatalf("failed to setup test database schema: %v", err)
+		t.Fatalf("failed to setup database schema: %v", err)
 	}
 
 	// Register cleanup
@@ -41,7 +41,7 @@ func NewTestDB(t *testing.T) (*sql.DB, Store) {
 func TruncateTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	tables := []string{"nodes"}
+	tables := []string{"peers", "node_subnets", "nodes"}
 	for _, table := range tables {
 		_, err := db.Exec("DELETE FROM " + table)
 		if err != nil {

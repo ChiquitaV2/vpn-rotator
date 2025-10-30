@@ -6,6 +6,12 @@
 -- Get a specific node by ID
 SELECT * FROM nodes WHERE id = ? LIMIT 1;
 
+-- name: GetNodeByIP :one
+-- Get a specific node by IP address
+SELECT *
+FROM nodes
+WHERE ip_address = ? LIMIT 1;
+
 -- name: GetActiveNode :one
 -- Get the currently active node (FR-17)
 -- Returns the most recently created active node to handle transition edge cases
@@ -82,6 +88,17 @@ SET
     last_handshake_at = ?,
     connected_clients = ?
 WHERE id = ?;
+
+-- name: UpdateNodeDetails :exec
+-- Update node IP address and public key while keeping provisioning status
+UPDATE nodes
+SET server_id         = ?,
+    ip_address        = ?,
+    server_public_key = ?,
+    version           = version + 1
+WHERE id = ?
+  AND status = 'provisioning'
+  AND version = ?;
 
 -- name: MarkNodeActive :exec
 -- Transition node from provisioning to active (FR-6)
@@ -195,3 +212,191 @@ DELETE FROM nodes;
 -- name: GetDatabaseVersion :one
 -- Get schema version for migrations
 SELECT sqlite_version() as version;
+
+-- ============================================================================
+-- PEER MANAGEMENT QUERIES
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- Peer Retrieval
+-- ----------------------------------------------------------------------------
+
+-- name: GetPeer :one
+-- Get a specific peer by ID
+SELECT *
+FROM peers
+WHERE id = ? LIMIT 1;
+
+-- name: GetPeerByPublicKey :one
+-- Get a peer by public key
+SELECT *
+FROM peers
+WHERE public_key = ? LIMIT 1;
+
+-- name: GetPeersByNode :many
+-- Get all peers for a specific node
+SELECT *
+FROM peers
+WHERE node_id = ?
+ORDER BY created_at DESC;
+
+-- name: GetPeersByStatus :many
+-- Get all peers with a specific status
+SELECT *
+FROM peers
+WHERE status = ?
+ORDER BY created_at DESC;
+
+-- name: GetAllPeers :many
+-- Get all peers
+SELECT *
+FROM peers
+ORDER BY created_at DESC;
+
+-- name: CountPeersByNode :one
+-- Count peers for a specific node
+SELECT COUNT(*) as count
+FROM peers
+WHERE node_id = ?;
+
+-- name: CountActivePeersByNode :one
+-- Count active peers for a specific node
+SELECT COUNT(*) as count
+FROM peers
+WHERE node_id = ? AND status = 'active';
+
+-- name: GetAllocatedIPsByNode :many
+-- Get all allocated IPs for a specific node
+SELECT allocated_ip
+FROM peers
+WHERE node_id = ?
+ORDER BY allocated_ip;
+
+-- ----------------------------------------------------------------------------
+-- Peer Creation & Updates
+-- ----------------------------------------------------------------------------
+
+-- name: CreatePeer :one
+-- Create a new peer
+INSERT INTO peers (id,
+                   node_id,
+                   public_key,
+                   allocated_ip,
+                   preshared_key,
+                   status,
+                   created_at)
+VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *;
+
+-- name: UpdatePeerStatus :exec
+-- Update peer status
+UPDATE peers
+SET status = ?
+WHERE id = ?;
+
+-- name: UpdatePeerLastHandshake :exec
+-- Update peer last handshake time
+UPDATE peers
+SET last_handshake_at = ?
+WHERE id = ?;
+
+-- name: DeletePeer :exec
+-- Delete a peer
+DELETE
+FROM peers
+WHERE id = ?;
+
+-- name: DeletePeersByNode :exec
+-- Delete all peers for a specific node
+DELETE
+FROM peers
+WHERE node_id = ?;
+
+-- ----------------------------------------------------------------------------
+-- Node Subnet Queries
+-- ----------------------------------------------------------------------------
+
+-- name: GetNodeSubnet :one
+-- Get subnet information for a specific node
+SELECT *
+FROM node_subnets
+WHERE node_id = ? LIMIT 1;
+
+-- name: GetAllNodeSubnets :many
+-- Get all node subnets
+SELECT *
+FROM node_subnets
+ORDER BY created_at DESC;
+
+-- name: GetNodeSubnetBySubnetCIDR :one
+-- Get node subnet by CIDR
+SELECT *
+FROM node_subnets
+WHERE subnet_cidr = ? LIMIT 1;
+
+-- name: CreateNodeSubnet :one
+-- Create a new node subnet allocation
+INSERT INTO node_subnets (node_id,
+                          subnet_cidr,
+                          gateway_ip,
+                          ip_range_start,
+                          ip_range_end,
+                          created_at)
+VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *;
+
+-- name: DeleteNodeSubnet :exec
+-- Delete a node subnet
+DELETE
+FROM node_subnets
+WHERE node_id = ?;
+
+-- name: GetUsedSubnetCIDRs :many
+-- Get all used subnet CIDRs
+SELECT subnet_cidr
+FROM node_subnets
+ORDER BY subnet_cidr;
+
+-- ----------------------------------------------------------------------------
+-- Peer Management Operations
+-- ----------------------------------------------------------------------------
+
+-- name: GetPeersForMigration :many
+-- Get active peers that need to be migrated from a node
+SELECT *
+FROM peers
+WHERE node_id = ?
+  AND status = 'active'
+ORDER BY created_at ASC;
+
+-- name: UpdatePeerNode :exec
+-- Move a peer to a different node (for migration)
+UPDATE peers
+SET node_id      = ?,
+    allocated_ip = ?
+WHERE id = ?;
+
+-- name: GetInactivePeers :many
+-- Get peers that have been inactive for a specified duration
+SELECT *
+FROM peers
+WHERE status = 'active'
+  AND (
+    last_handshake_at IS NULL
+        OR datetime(last_handshake_at, '+' || ? || ' minutes') <= CURRENT_TIMESTAMP
+    )
+ORDER BY last_handshake_at ASC;
+
+-- name: GetPeerStatistics :one
+-- Get peer statistics across all nodes
+SELECT COUNT(*)                                                 as total_peers,
+       SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END)       as active_peers,
+       SUM(CASE WHEN status = 'disconnected' THEN 1 ELSE 0 END) as disconnected_peers,
+       SUM(CASE WHEN status = 'removing' THEN 1 ELSE 0 END)     as removing_peers
+FROM peers;
+
+-- name: CheckIPConflict :one
+-- Check if an IP address is already allocated
+SELECT EXISTS(SELECT 1 FROM peers WHERE allocated_ip = ?) as ip_exists;
+
+-- name: CheckPublicKeyConflict :one
+-- Check if a public key is already in use
+SELECT EXISTS(SELECT 1 FROM peers WHERE public_key = ?) as key_exists;

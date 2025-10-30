@@ -38,11 +38,25 @@ type mockOrchestrator struct {
 	shouldFail bool
 }
 
-func (m *mockOrchestrator) GetLatestConfig(ctx context.Context) (*models.NodeConfig, error) {
+func (m *mockOrchestrator) GetNodeConfig(ctx context.Context, nodeID string) (*models.NodeConfig, error) {
 	if m.shouldFail {
 		return nil, errors.New("mock orchestrator error")
 	}
 	return &models.NodeConfig{}, nil
+}
+
+func (m *mockOrchestrator) SelectNodeForPeer(ctx context.Context) (string, error) {
+	if m.shouldFail {
+		return "", errors.New("mock orchestrator error")
+	}
+	return "mock-node-id", nil
+}
+
+func (m *mockOrchestrator) GetNodeLoadBalance(ctx context.Context) (map[string]int, error) {
+	if m.shouldFail {
+		return nil, errors.New("mock orchestrator error")
+	}
+	return map[string]int{"mock-node-id": 0}, nil
 }
 
 func (m *mockOrchestrator) ShouldRotate(ctx context.Context) (bool, error) {

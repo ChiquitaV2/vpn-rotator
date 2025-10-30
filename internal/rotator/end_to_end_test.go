@@ -7,8 +7,11 @@ import (
 	"testing"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // TestEndToEndNodeLifecycle tests the complete node lifecycle from creation to cleanup
@@ -23,19 +26,39 @@ func TestEndToEndNodeLifecycle(t *testing.T) {
 	// Create logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Create IP manager for node manager
+	ipManager, err := ipmanager.NewIPManager(store, logger, nil)
+	if err != nil {
+		t.Fatalf("Failed to create IP manager: %v", err)
+	}
+
 	// Create real NodeManager with mocked dependencies
-	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
+
+	// Create peer manager
+	peerLogger := &logger.Logger{Logger: logger}
+	peerManager := peermanager.NewManager(store, peerLogger)
 
 	// Create real Orchestrator with real NodeManager
-	orch := orchestrator.New(store, nodeManager, logger)
+	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()
 
-	// Step 1: Test initial node creation
-	t.Log("Step 1: Creating initial node")
-	config1, err := orch.GetLatestConfig(ctx)
+	// Step 1: Test peer connection (which will create initial node if needed)
+	t.Log("Step 1: Testing peer connection")
+	nodeID, err := orch.SelectNodeForPeer(ctx)
 	if err != nil {
-		t.Fatalf("failed to get initial config: %v", err)
+		t.Fatalf("failed to select node for peer: %v", err)
+	}
+
+	if nodeID == "" {
+		t.Fatal("expected node ID to be returned")
+	}
+
+	// Get node config to verify it was created
+	config1, err := orch.GetNodeConfig(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("failed to get node config: %v", err)
 	}
 
 	if config1 == nil {
