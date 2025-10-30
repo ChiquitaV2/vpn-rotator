@@ -50,8 +50,8 @@ fmt:
 sqlc-generate:
 	@echo "Generating database code..."
 	sqlc generate -f db/sqlc.yaml
-	@echo "Creating symlink for internal db schema..."
-	ln -s db/schema.sql internal/rotator/db/schema.sql
+	@echo "Copying schema for internal db schema embed..."
+	cp -r db/schema.sql internal/rotator/db/schema.sql
 
 ## docker-build: Build Docker images
 docker-build:

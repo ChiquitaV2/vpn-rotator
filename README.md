@@ -4,15 +4,23 @@ VPN Rotator is a self-hosted system that automatically rotates WireGuard VPN nod
 
 ## Features
 
-- **Automatic Server Rotation**: Automatically provisions new VPN servers and decommissions old ones on a configurable schedule.
+- **Comprehensive Peer Management**: Full lifecycle management of WireGuard peers with automatic IP allocation and node
+  assignment.
+- **Race Condition Protection**: Prevents multiple nodes from being provisioned simultaneously during concurrent
+  requests.
+- **Automatic Server Rotation**: Automatically provisions new VPN servers and decommissions old ones with seamless peer
+  migration.
 - **Dynamic Provisioning**: Dynamically selects server types and locations from Hetzner Cloud for better resilience.
+- **Intelligent Load Balancing**: Automatically distributes peers across nodes based on capacity and performance.
 - **Cost-Effective**: Automatically destroys idle nodes to save on cloud provider costs.
 - **Health Checks**: Monitors the health of VPN nodes to ensure reliability.
-- **RESTful API**: Provides standardized JSON API with middleware for logging, request tracing, and CORS.
+- **RESTful API**: Comprehensive JSON API for peer management with middleware for logging, request tracing, and CORS.
 - **Connector CLI**: A command-line client to easily connect to and switch between VPN nodes.
-- **Stateful and Resilient**: Uses SQLite with migrations and connection pooling for robust state management.
+- **Stateful and Resilient**: Uses SQLite with migrations, connection pooling, and circuit breakers for robust state
+  management.
 - **Structured Logging**: Context-aware logging with request IDs and structured fields using slog.
 - **Hybrid Configuration**: Supports both YAML files and environment variables for flexible deployment.
+- **IP Subnet Management**: Automatic subnet allocation and IP address management per node with conflict prevention.
 
 ## Architecture
 
@@ -113,21 +121,125 @@ Returns service health status:
 }
 ```
 
-### Get Latest VPN Configuration
+### Peer Management
+
+#### Connect to VPN
 
 ```bash
-GET /api/v1/config/latest
+POST /api/v1/connect
 ```
 
-Returns the current active VPN node configuration:
+Connect a peer to the VPN with automatic node selection and IP allocation:
+
+**Request:**
+
+```json
+{
+  "public_key": "client_public_key_here",
+  "generate_keys": false
+}
+```
+
+Or request server-side key generation:
+
+```json
+{
+  "generate_keys": true
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "peer_id": "peer-uuid",
+    "server_public_key": "server_public_key_here",
+    "server_ip": "1.2.3.4",
+    "server_port": 51820,
+    "client_ip": "10.8.1.5",
+    "client_private_key": "private_key_if_generated",
+    "dns": ["1.1.1.1", "8.8.8.8"],
+    "allowed_ips": ["0.0.0.0/0"]
+  }
+}
+```
+
+#### Disconnect from VPN
+
+```bash
+DELETE /api/v1/disconnect
+```
+
+**Request:**
+
+```json
+{
+  "peer_id": "peer-uuid"
+}
+```
+
+**Response:**
 
 ```json
 {
   "success": true,
   "data": {
-    "server_public_key": "...",
-    "server_ip": "1.2.3.4",
-    "port": 51820
+    "message": "Peer disconnected successfully",
+    "peer_id": "peer-uuid"
+  }
+}
+```
+
+#### List Peers
+
+```bash
+GET /api/v1/peers?node_id=node1&status=active&limit=50&offset=0
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "peers": [
+      {
+        "id": "peer-uuid",
+        "node_id": "node-uuid",
+        "public_key": "peer_public_key",
+        "allocated_ip": "10.8.1.5",
+        "status": "active",
+        "created_at": "2023-01-01T00:00:00Z",
+        "last_handshake_at": "2023-01-01T12:00:00Z"
+      }
+    ],
+    "total_count": 1,
+    "offset": 0,
+    "limit": 50
+  }
+}
+```
+
+#### Get Peer Details
+
+```bash
+GET /api/v1/peers/{peer_id}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "peer-uuid",
+    "node_id": "node-uuid",
+    "public_key": "peer_public_key",
+    "allocated_ip": "10.8.1.5",
+    "status": "active",
+    "created_at": "2023-01-01T00:00:00Z",
+    "last_handshake_at": "2023-01-01T12:00:00Z"
   }
 }
 ```
@@ -143,7 +255,9 @@ If provisioning is in progress:
 }
 ```
 
-Error responses include request IDs for tracing:
+### Error Responses
+
+All error responses include request IDs for tracing:
 
 ```json
 {

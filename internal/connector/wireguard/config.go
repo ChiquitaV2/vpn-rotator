@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
 // ConfigGenerator generates and applies WireGuard configurations.
@@ -78,7 +79,7 @@ func (cg *ConfigGenerator) WriteConfigFile(configContent, configPath string) err
 }
 
 // ApplyConfig applies the WireGuard configuration using wg-quick up.
-func (cg *ConfigGenerator) ApplyConfig(configPath, interfaceName string) error {
+func (cg *ConfigGenerator) ApplyConfig(configPath, interfaceName string) (string, error) {
 	cg.logger.Info("applying WireGuard configuration", "interface", interfaceName, "config_path", configPath)
 
 	cmd := exec.Command("wg-quick", "up", configPath)
@@ -90,18 +91,40 @@ func (cg *ConfigGenerator) ApplyConfig(configPath, interfaceName string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		cg.logger.Error("failed to apply WireGuard config", "interface", interfaceName, "error", err, "output", string(output))
-		return fmt.Errorf("failed to apply WireGuard config: %w, output: %s", err, string(output))
+		return "", fmt.Errorf("failed to apply WireGuard config: %w, output: %s", err, string(output))
+	}
+
+	// read interface name from output (e.g. "Interface for wg-wg0 is utun6")
+	actualIf := ""
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Interface for ") && strings.Contains(line, " is ") {
+			parts := strings.Split(line, " is ")
+			if len(parts) >= 2 {
+				cand := strings.TrimSpace(parts[len(parts)-1])
+				if cand != "" {
+					actualIf = cand
+					break
+				}
+			}
+		}
+	}
+
+	if actualIf != "" && actualIf != interfaceName {
+		cg.logger.Info("WireGuard interface name changed during setup", "requested", interfaceName, "effective", actualIf)
+		return actualIf, nil
 	}
 
 	cg.logger.Info("successfully applied WireGuard config", "interface", interfaceName)
-	return nil
+	return interfaceName, nil
 }
 
 // RemoveConfig removes the WireGuard configuration using wg-quick down.
-func (cg *ConfigGenerator) RemoveConfig(interfaceName string) error {
-	cg.logger.Info("removing WireGuard configuration", "interface", interfaceName)
+func (cg *ConfigGenerator) RemoveConfig(configPath, interfaceName string) error {
+	cg.logger.Info("removing WireGuard configuration", "interface", interfaceName, "config_path", configPath)
 
-	cmd := exec.Command("wg-quick", "down", interfaceName)
+	cmd := exec.Command("wg-quick", "down", configPath)
+	//cmd = exec.Command("wg-quick", "down", interfaceName)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -133,10 +156,10 @@ func (cg *ConfigGenerator) ValidateConfig(configContent string) error {
 			hasPeer = true
 		} else if strings.HasPrefix(line, "PrivateKey") {
 			privateKey := strings.TrimSpace(strings.SplitN(line, "=", 2)[1])
-			privateKeyValid = isValidWireGuardKey(privateKey)
+			privateKeyValid = crypto.IsValidWireGuardKey(privateKey)
 		} else if strings.HasPrefix(line, "PublicKey") {
 			publicKey := strings.TrimSpace(strings.SplitN(line, "=", 2)[1])
-			publicKeyValid = isValidWireGuardKey(publicKey)
+			publicKeyValid = crypto.IsValidWireGuardKey(publicKey)
 		} else if strings.HasPrefix(line, "Endpoint") {
 			endpoint := strings.TrimSpace(strings.SplitN(line, "=", 2)[1])
 			endpointValid = isValidEndpoint(endpoint)
@@ -171,24 +194,6 @@ func (cg *ConfigGenerator) ValidateConfig(configContent string) error {
 	return nil
 }
 
-// isValidWireGuardKey checks if a WireGuard key is valid (base64 encoded 32-byte key)
-func isValidWireGuardKey(key string) bool {
-	// WireGuard keys are base64-encoded 32-byte values = 44 characters with '=' padding
-	if len(key) != 44 {
-		return false
-	}
-
-	// Check it's valid base64
-	for _, r := range key {
-		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') ||
-			(r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=') {
-			return false
-		}
-	}
-
-	return true
-}
-
 // isValidEndpoint checks if an endpoint is a valid IP:port format
 func isValidEndpoint(endpoint string) bool {
 	parts := strings.Split(endpoint, ":")
@@ -221,4 +226,16 @@ func (cg *ConfigGenerator) InterfaceExists(interfaceName string) bool {
 	cmd := exec.Command("wg", "show", interfaceName)
 	err := cmd.Run()
 	return err == nil
+}
+
+// UpdateConfigField updates a specific field in a WireGuard configuration
+func (cg *ConfigGenerator) UpdateConfigField(config, field, value string) string {
+	lines := strings.Split(config, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), field) {
+			lines[i] = fmt.Sprintf("%s = %s", field, value)
+			break
+		}
+	}
+	return strings.Join(lines, "\n")
 }

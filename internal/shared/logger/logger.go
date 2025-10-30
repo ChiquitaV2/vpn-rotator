@@ -4,6 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"time"
+
+	"github.com/lmittmann/tint"
 )
 
 // ContextKey is the type for context keys used in logging
@@ -46,11 +49,20 @@ func New(level, format string) *Logger {
 		Level: logLevel,
 	}
 
+	timeFormat := time.RFC3339
+	if logLevel == slog.LevelDebug {
+		timeFormat = time.Kitchen
+	}
 	// Create handler based on format
 	if format == "json" {
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		handler = tint.NewHandler(os.Stdout, &tint.Options{
+			Level:      logLevel,
+			TimeFormat: timeFormat,
+			AddSource:  logLevel == slog.LevelDebug,
+		})
+		//handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 
 	return &Logger{
