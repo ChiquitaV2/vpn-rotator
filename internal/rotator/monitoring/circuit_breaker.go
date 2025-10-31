@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/health"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/provisioner"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager/provisioner"
 )
 
 // CircuitBreakerMonitor provides monitoring capabilities for circuit breakers.

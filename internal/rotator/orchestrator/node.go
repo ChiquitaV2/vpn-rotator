@@ -13,7 +13,7 @@ import (
 )
 
 // GetNodeConfig returns the VPN configuration for a specific node.
-func (o *Orchestrator) GetNodeConfig(ctx context.Context, nodeID string) (*nodemanager.NodeConfig, error) {
+func (o *manager) GetNodeConfig(ctx context.Context, nodeID string) (*nodemanager.NodeConfig, error) {
 	node, err := o.store.GetNode(ctx, nodeID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -34,17 +34,17 @@ func (o *Orchestrator) GetNodeConfig(ctx context.Context, nodeID string) (*nodem
 }
 
 // DestroyNode destroys a VPN node using the node manager.
-func (o *Orchestrator) DestroyNode(ctx context.Context, node db.Node) error {
+func (o *manager) DestroyNode(ctx context.Context, node db.Node) error {
 	return o.nodeManager.DestroyNode(ctx, node)
 }
 
 // GetNodesByStatus returns nodes with the given status.
-func (o *Orchestrator) GetNodesByStatus(ctx context.Context, status string) ([]db.Node, error) {
+func (o *manager) GetNodesByStatus(ctx context.Context, status string) ([]db.Node, error) {
 	return o.store.GetNodesByStatus(ctx, status)
 }
 
 // SelectNodeForPeer selects the optimal node for a new peer based on peer count and capacity
-func (o *Orchestrator) SelectNodeForPeer(ctx context.Context) (string, error) {
+func (o *manager) SelectNodeForPeer(ctx context.Context) (string, error) {
 	o.logger.Debug("selecting optimal node for new peer")
 
 	// Get all active nodes
@@ -118,7 +118,7 @@ func (o *Orchestrator) SelectNodeForPeer(ctx context.Context) (string, error) {
 }
 
 // provisionNodeSafely provisions a new node with race condition protection
-func (o *Orchestrator) provisionNodeSafely(ctx context.Context) (*nodemanager.NodeConfig, error) {
+func (o *manager) provisionNodeSafely(ctx context.Context) (*nodemanager.NodeConfig, error) {
 	o.logger.Info("safely provisioning new node with race condition protection")
 
 	// First, check if there's already a node being provisioned to avoid race conditions
@@ -140,7 +140,7 @@ func (o *Orchestrator) provisionNodeSafely(ctx context.Context) (*nodemanager.No
 }
 
 // waitForProvisioningNode waits for an existing provisioning node to become active
-func (o *Orchestrator) waitForProvisioningNode(ctx context.Context, nodeID string) (*nodemanager.NodeConfig, error) {
+func (o *manager) waitForProvisioningNode(ctx context.Context, nodeID string) (*nodemanager.NodeConfig, error) {
 	o.logger.Info("waiting for provisioning node to become active", slog.String("node_id", nodeID))
 
 	ticker := time.NewTicker(5 * time.Second)
@@ -192,7 +192,7 @@ func (o *Orchestrator) waitForProvisioningNode(ctx context.Context, nodeID strin
 }
 
 // ValidateNodePeerCapacity validates that a node can accommodate additional peers
-func (o *Orchestrator) ValidateNodePeerCapacity(ctx context.Context, nodeID string, additionalPeers int) error {
+func (o *manager) ValidateNodePeerCapacity(ctx context.Context, nodeID string, additionalPeers int) error {
 	o.logger.Debug("validating node peer capacity",
 		slog.String("node_id", nodeID),
 		slog.Int("additional_peers", additionalPeers))
@@ -224,7 +224,7 @@ func (o *Orchestrator) ValidateNodePeerCapacity(ctx context.Context, nodeID stri
 }
 
 // SyncNodePeers synchronizes the peer state between the database and the actual node
-func (o *Orchestrator) SyncNodePeers(ctx context.Context, nodeID string) error {
+func (o *manager) SyncNodePeers(ctx context.Context, nodeID string) error {
 	o.logger.Info("synchronizing node peers", slog.String("node_id", nodeID))
 
 	// Get node information
@@ -312,7 +312,7 @@ func (o *Orchestrator) SyncNodePeers(ctx context.Context, nodeID string) error {
 }
 
 // GetNodeLoadBalance returns a map of node IDs to their current peer counts
-func (o *Orchestrator) GetNodeLoadBalance(ctx context.Context) (map[string]int, error) {
+func (o *manager) GetNodeLoadBalance(ctx context.Context) (map[string]int, error) {
 	o.logger.Debug("getting node load balance")
 
 	// Get all active nodes

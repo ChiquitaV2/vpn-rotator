@@ -10,31 +10,29 @@ import (
 
 // GetOrphanedNodes returns server IDs of nodes that are older than the specified age
 // and should be cleaned up. This implements the CleanupManager interface.
-func (o *Orchestrator) GetOrphanedNodes(ctx context.Context, age time.Duration) ([]string, error) {
-	_ = time.Now().Add(-age) // cutoffTime for future use
+func (o *manager) GetOrphanedNodes(ctx context.Context, age time.Duration) ([]string, error) {
+	//cutoffTime := time.Now().Add(-age)
 
-	// Get nodes that are scheduled for destruction and past their destroy time
-	nodes, err := o.store.GetNodesForDestruction(ctx)
+	// Get nodes that are considered orphaned (e.g. stuck in provisioning)
+	// We assume the store has a method to fetch these nodes.
+	nodes, err := o.store.GetOrphanedNodes(ctx)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return []string{}, nil
 		}
-		return nil, fmt.Errorf("orchestrator: failed to get nodes for destruction: %w", err)
+		return nil, fmt.Errorf("orchestrator: failed to get orphaned nodes: %w", err)
 	}
 
 	var orphanedIDs []string
 	for _, node := range nodes {
-		// Check if the node's destroy time has passed
-		if node.DestroyAt.Valid && node.DestroyAt.Time.Before(time.Now()) {
-			orphanedIDs = append(orphanedIDs, node.ID)
-		}
+		orphanedIDs = append(orphanedIDs, node.ID)
 	}
 
 	return orphanedIDs, nil
 }
 
 // DeleteNode deletes a node by server ID. This implements the CleanupManager interface.
-func (o *Orchestrator) DeleteNode(ctx context.Context, serverID string) error {
+func (o *manager) DeleteNode(ctx context.Context, serverID string) error {
 	// Get the node from the database first
 	node, err := o.store.GetNode(ctx, serverID)
 	if err != nil {
@@ -51,7 +49,7 @@ func (o *Orchestrator) DeleteNode(ctx context.Context, serverID string) error {
 }
 
 // CleanupInactivePeers removes peers that have been inactive for the specified duration
-func (o *Orchestrator) CleanupInactivePeers(ctx context.Context, inactiveMinutes int) error {
+func (o *manager) CleanupInactivePeers(ctx context.Context, inactiveMinutes int) error {
 	o.logger.Info("starting inactive peer cleanup", slog.Int("inactive_minutes", inactiveMinutes))
 
 	// Get inactive peers using peer manager
@@ -92,5 +90,31 @@ func (o *Orchestrator) CleanupInactivePeers(ctx context.Context, inactiveMinutes
 		return fmt.Errorf("orchestrator: %d peer cleanups failed: %v", len(cleanupErrors), cleanupErrors)
 	}
 
+	return nil
+}
+
+// CleanupNodes destroys nodes scheduled for destruction.
+func (o *manager) CleanupNodes(ctx context.Context) error {
+	nodes, err := o.store.GetNodesForDestruction(ctx)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("orchestrator: failed to get nodes for destruction: %w", err)
+	}
+
+	if len(nodes) == 0 {
+		o.logger.Info("no nodes to cleanup")
+		return nil
+	}
+
+	for _, node := range nodes {
+		o.logger.Info("cleaning up node", slog.String("node_id", node.ID))
+		if err := o.DestroyNode(ctx, node); err != nil {
+			o.logger.Error("failed to destroy node",
+				slog.String("node_id", node.ID),
+				slog.String("error", err.Error()))
+		}
+	}
 	return nil
 }

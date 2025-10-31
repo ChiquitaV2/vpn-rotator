@@ -18,36 +18,12 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/monitoring"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
-
-// OrchestratorInterface defines the interface for orchestrator operations
-type OrchestratorInterface interface {
-	// Node lifecycle operations
-	ShouldRotate(ctx context.Context) (bool, error)
-	RotateNodes(ctx context.Context) error
-	CleanupNodes(ctx context.Context) error
-	GetNodesByStatus(ctx context.Context, status string) ([]db.Node, error)
-	DestroyNode(ctx context.Context, node db.Node) error
-	GetNodeConfig(ctx context.Context, nodeID string) (*nodemanager.NodeConfig, error)
-
-	// Peer management operations
-	SelectNodeForPeer(ctx context.Context) (string, error)
-	GetNodeLoadBalance(ctx context.Context) (map[string]int, error)
-	MigratePeersFromNode(ctx context.Context, sourceNodeID string, targetNodeID string) error
-
-	// Enhanced peer operations
-	CreatePeerOnOptimalNode(ctx context.Context, publicKey string, presharedKey *string) (*peermanager.PeerConfig, error)
-	RemovePeerFromSystem(ctx context.Context, peerID string) error
-	GetPeerStatistics(ctx context.Context) (*peermanager.PeerStatistics, error)
-	CleanupInactivePeers(ctx context.Context, inactiveMinutes int) error
-	ValidateNodePeerCapacity(ctx context.Context, nodeID string, additionalPeers int) error
-	SyncNodePeers(ctx context.Context, nodeID string) error
-}
 
 // SchedulerInterface defines the interface for scheduler operations
 type SchedulerInterface interface {
@@ -64,7 +40,7 @@ type APIServerInterface interface {
 // Service coordinates all rotator service components and manages their lifecycle
 type Service struct {
 	config       *config.Config
-	orchestrator OrchestratorInterface
+	orchestrator orchestrator.Orchestrator
 	scheduler    SchedulerInterface
 	apiServer    APIServerInterface
 	logger       *slog.Logger
@@ -76,7 +52,6 @@ type Service struct {
 	// Circuit breaker instances for monitoring
 	provisionerCB *provisioner.CircuitBreaker
 	healthCB      *health.CircuitBreakerHealthChecker
-
 	// Internal state for lifecycle management
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -155,13 +130,12 @@ func (s *Service) initializeComponents() error {
 	// 3. Initialize health checker
 	s.logger.Debug("initializing health checker")
 	baseHealthChecker := health.NewHTTPHealthChecker()
-
 	// Wrap health checker with circuit breaker for resilience
 	s.logger.Debug("initializing health check circuit breaker")
+	s.logger.Debug("health checker with circuit breaker initialized successfully")
 	healthCircuitBreakerConfig := health.DefaultCircuitBreakerConfig()
 	s.healthCB = health.NewCircuitBreakerHealthChecker(baseHealthChecker, healthCircuitBreakerConfig, s.logger)
 	healthChecker := s.healthCB
-	s.logger.Debug("health checker with circuit breaker initialized successfully")
 
 	// 4. Read SSH private key
 	s.logger.Debug("reading SSH private key")
@@ -232,8 +206,6 @@ func (s *Service) initializeComponents() error {
 		},
 		s.orchestrator,
 		peerManager,
-		ipManager,
-		nodeManager,
 		cbMonitor,
 		s.logger,
 	)
@@ -261,7 +233,7 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	// Start components in dependency order
-	// 1. Orchestrator is a dependency for scheduler, so it should be ready first
+	// 1. manager is a dependency for scheduler, so it should be ready first
 	s.logger.Info("orchestrator ready (no startup required)")
 
 	// 2. Start scheduler (depends on orchestrator)

@@ -37,14 +37,14 @@ func (m *Manager) saveWireGuardConfigAlternative(ctx context.Context, nodeIP str
 	showCmd := "wg showconf wg0"
 	config, err := m.executeSSHCommand(ctx, nodeIP, showCmd)
 	if err != nil {
-		return fmt.Errorf("failed to get current WireGuard config: %w", err)
+		return NewWireguardError(nodeIP, "showconf", err)
 	}
 
 	// Write to configuration file
 	writeCmd := fmt.Sprintf("echo '%s' > /etc/wireguard/wg0.conf", config)
 	_, err = m.executeSSHCommand(ctx, nodeIP, writeCmd)
 	if err != nil {
-		return fmt.Errorf("failed to write WireGuard config: %w", err)
+		return NewWireguardError(nodeIP, "writeconf", err)
 	}
 
 	return nil
@@ -56,7 +56,7 @@ func (m *Manager) validateWireGuardInterface(ctx context.Context, nodeIP string)
 	cmd := "wg show wg0"
 	output, err := m.executeSSHCommand(ctx, nodeIP, cmd)
 	if err != nil {
-		return fmt.Errorf("WireGuard interface wg0 not found or not configured: %w", err)
+		return NewWireguardError(nodeIP, "show", fmt.Errorf("WireGuard interface wg0 not found or not configured: %w", err))
 	}
 
 	// Basic validation that output contains interface information
@@ -72,7 +72,7 @@ func (m *Manager) getWireGuardInterfaceInfo(ctx context.Context, nodeIP string) 
 	cmd := "wg show wg0"
 	output, err := m.executeSSHCommand(ctx, nodeIP, cmd)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get WireGuard interface info: %w", err)
+		return nil, NewWireguardError(nodeIP, "show", fmt.Errorf("failed to get WireGuard interface info: %w", err))
 	}
 
 	info := make(map[string]string)

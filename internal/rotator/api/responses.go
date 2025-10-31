@@ -22,17 +22,6 @@ func WriteSuccess[T any](w http.ResponseWriter, data T) error {
 	})
 }
 
-// WriteError writes an error JSON response.
-func WriteError(w http.ResponseWriter, statusCode int, code, message string) error {
-	return WriteJSON(w, statusCode, api.Response[any]{
-		Success: false,
-		Error: &api.ErrorInfo{
-			Code:    code,
-			Message: message,
-		},
-	})
-}
-
 // WriteErrorWithRequestID writes an error JSON response with a request ID.
 func WriteErrorWithRequestID(w http.ResponseWriter, statusCode int, code, message, requestID string) error {
 	return WriteJSON(w, statusCode, api.Response[any]{

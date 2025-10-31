@@ -39,7 +39,7 @@ func TestEndToEndNodeLifecycle(t *testing.T) {
 	peerLogger := &logger.Logger{Logger: logger}
 	peerManager := peermanager.NewManager(store, peerLogger)
 
-	// Create real Orchestrator with real NodeManager
+	// Create real manager with real NodeManager
 	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()

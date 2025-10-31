@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
-	"time"
+
+	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
 // AddPeerToNode adds a WireGuard peer to a specific node via SSH with comprehensive error handling
@@ -15,7 +14,6 @@ func (m *Manager) AddPeerToNode(ctx context.Context, nodeIP string, peer *PeerCo
 		slog.String("node_ip", nodeIP),
 		slog.String("peer_id", peer.ID),
 		slog.String("allocated_ip", peer.AllocatedIP))
-
 	// Validate peer configuration
 	if err := m.validatePeerConfig(peer); err != nil {
 		return fmt.Errorf("invalid peer config: %w", err)
@@ -64,7 +62,7 @@ func (m *Manager) AddPeerToNode(ctx context.Context, nodeIP string, peer *PeerCo
 	// Execute command
 	_, err = m.executeSSHCommand(ctx, nodeIP, cmd)
 	if err != nil {
-		return fmt.Errorf("failed to add peer to WireGuard: %w", err)
+		return NewPeerOperationError(nodeIP, peer.ID, peer.PublicKey, "add", err)
 	}
 
 	// Validate that peer was added successfully
@@ -74,7 +72,7 @@ func (m *Manager) AddPeerToNode(ctx context.Context, nodeIP string, peer *PeerCo
 			slog.String("node_ip", nodeIP),
 			slog.String("peer_id", peer.ID))
 		rollback.execute(ctx)
-		return fmt.Errorf("peer addition validation failed: %w", err)
+		return NewPeerOperationError(nodeIP, peer.ID, peer.PublicKey, "add-validate", err)
 	}
 
 	// Save WireGuard configuration to persist across reboots
@@ -101,8 +99,8 @@ func (m *Manager) RemovePeerFromNode(ctx context.Context, nodeIP string, publicK
 		slog.String("public_key", publicKey[:8]+"..."))
 
 	// Validate public key
-	if err := m.validateWireGuardPublicKey(publicKey); err != nil {
-		return fmt.Errorf("invalid public key: %w", err)
+	if !crypto.IsValidWireGuardKey(publicKey) {
+		return fmt.Errorf("invalid public key format")
 	}
 
 	// Check if peer exists before attempting removal
@@ -133,7 +131,7 @@ func (m *Manager) RemovePeerFromNode(ctx context.Context, nodeIP string, publicK
 	// Execute command
 	_, err = m.executeSSHCommand(ctx, nodeIP, cmd)
 	if err != nil {
-		return fmt.Errorf("failed to remove peer from WireGuard: %w", err)
+		return NewPeerOperationError(nodeIP, "", publicKey, "remove", err)
 	}
 
 	// Validate that peer was removed successfully
@@ -167,7 +165,7 @@ func (m *Manager) ListNodePeers(ctx context.Context, nodeIP string) ([]*PeerInfo
 	cmd := "wg show wg0 dump"
 	output, err := m.executeSSHCommand(ctx, nodeIP, cmd)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get WireGuard status: %w", err)
+		return nil, NewSSHError(nodeIP, cmd, 1, true, err)
 	}
 
 	// Parse WireGuard dump output
@@ -204,7 +202,7 @@ func (m *Manager) UpdateNodePeerConfig(ctx context.Context, nodeIP string, peer 
 
 	// Add peer with new configuration
 	if err := m.AddPeerToNode(ctx, nodeIP, peer); err != nil {
-		return fmt.Errorf("failed to add updated peer: %w", err)
+		return err
 	}
 
 	m.logger.Info("successfully updated peer config on node",
@@ -212,70 +210,6 @@ func (m *Manager) UpdateNodePeerConfig(ctx context.Context, nodeIP string, peer 
 		slog.String("peer_id", peer.ID))
 
 	return nil
-}
-
-// parseWireGuardDump parses the output of 'wg show wg0 dump'
-func (m *Manager) parseWireGuardDump(output string) ([]*PeerInfo, error) {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	var peers []*PeerInfo
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// WireGuard dump format: interface_name public_key preshared_key endpoint allowed_ips latest_handshake transfer_rx transfer_tx persistent_keepalive
-		fields := strings.Fields(line)
-		if len(fields) < 8 {
-			continue
-		}
-
-		// Skip interface line (first line)
-		if fields[0] == "wg0" && len(fields) == 3 {
-			continue
-		}
-
-		publicKey := fields[0]
-		allowedIPs := fields[3]
-		latestHandshake := fields[4]
-		transferRx := fields[5]
-		transferTx := fields[6]
-
-		peer := &PeerInfo{
-			PublicKey: publicKey,
-		}
-
-		// Parse allowed IPs to get allocated IP
-		if allowedIPs != "(none)" {
-			// Extract IP from CIDR (e.g., "10.8.1.5/32" -> "10.8.1.5")
-			if idx := strings.Index(allowedIPs, "/"); idx > 0 {
-				peer.AllocatedIP = allowedIPs[:idx]
-			} else {
-				peer.AllocatedIP = allowedIPs
-			}
-		}
-
-		// Parse latest handshake
-		if latestHandshake != "0" {
-			if timestamp, err := strconv.ParseInt(latestHandshake, 10, 64); err == nil {
-				handshakeTime := time.Unix(timestamp, 0)
-				peer.LastHandshakeAt = &handshakeTime
-			}
-		}
-
-		// Parse transfer statistics
-		if rx, err := strconv.ParseInt(transferRx, 10, 64); err == nil {
-			peer.TransferRx = rx
-		}
-		if tx, err := strconv.ParseInt(transferTx, 10, 64); err == nil {
-			peer.TransferTx = tx
-		}
-
-		peers = append(peers, peer)
-	}
-
-	return peers, nil
 }
 
 // validatePeerAddition validates that a peer was successfully added to WireGuard

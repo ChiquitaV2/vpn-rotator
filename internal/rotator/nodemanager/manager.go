@@ -6,38 +6,48 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/health"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/provisioner"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ssh"
 )
 
+// HealthChecker defines the interface for checking node health.
+type HealthChecker interface {
+	Check(ctx context.Context, nodeIP string) error
+}
+
 // NodeManager defines the interface for direct node lifecycle operations.
 type NodeManager interface {
-	// CreateNode provisions a new VPN node and returns its configuration
+	NodeLifecycleManager
+	NodePeerManager
+	NodeInfoManager
+}
+
+// NodeLifecycleManager defines methods for node lifecycle.
+type NodeLifecycleManager interface {
 	CreateNode(ctx context.Context) (*NodeConfig, error)
-
-	// DestroyNode destroys a VPN node by ID
 	DestroyNode(ctx context.Context, node db.Node) error
+}
 
-	// GetNodeHealth checks if a node is healthy and reachable
-	GetNodeHealth(ctx context.Context, nodeIP string) error
-
-	// GetNodePublicKey retrieves the WireGuard public key from a node
-	GetNodePublicKey(ctx context.Context, nodeIP string) (string, error)
-
-	// Peer management methods for individual nodes
+// NodePeerManager defines methods for peer management on a node.
+type NodePeerManager interface {
 	AddPeerToNode(ctx context.Context, nodeIP string, peer *PeerConfig) error
 	RemovePeerFromNode(ctx context.Context, nodeIP string, publicKey string) error
 	ListNodePeers(ctx context.Context, nodeIP string) ([]*PeerInfo, error)
 	UpdateNodePeerConfig(ctx context.Context, nodeIP string, peer *PeerConfig) error
 }
 
+// NodeInfoManager defines methods for getting information from a node.
+type NodeInfoManager interface {
+	GetNodeHealth(ctx context.Context, nodeIP string) error
+	GetNodePublicKey(ctx context.Context, nodeIP string) (string, error)
+}
+
 // Manager implements the NodeManager interface for direct node operations.
 type Manager struct {
 	store         db.Store
 	provisioner   provisioner.Provisioner
-	health        health.HealthChecker
+	healthChecker HealthChecker
 	logger        *slog.Logger
 	sshPrivateKey string
 	sshPool       *ssh.Pool
@@ -48,17 +58,17 @@ type Manager struct {
 func New(
 	store db.Store,
 	provisioner provisioner.Provisioner,
-	health health.HealthChecker,
+	healthChecker HealthChecker,
 	logger *slog.Logger,
 	sshPrivateKey string,
 	ipManager ipmanager.IPManager,
-) *Manager {
+) NodeManager {
 	sshPool := ssh.NewPool(sshPrivateKey, logger, 5*time.Minute)
 
 	manager := &Manager{
 		store:         store,
 		provisioner:   provisioner,
-		health:        health,
+		healthChecker: healthChecker,
 		logger:        logger,
 		sshPrivateKey: sshPrivateKey,
 		sshPool:       sshPool,

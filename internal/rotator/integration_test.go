@@ -17,7 +17,6 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/models"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 
@@ -143,7 +142,7 @@ func TestOrchestratorWithNodeManager(t *testing.T) {
 	peerLogger := &logger.Logger{Logger: logger}
 	peerManager := peermanager.NewManager(store, peerLogger)
 
-	// Create real Orchestrator with real NodeManager
+	// Create real manager with real NodeManager
 	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()
@@ -204,7 +203,7 @@ func TestOrchestratorWithNodeManagerProvisionerError(t *testing.T) {
 	peerLogger := &logger.Logger{Logger: logger}
 	peerManager := peermanager.NewManager(store, peerLogger)
 
-	// Create real Orchestrator with real NodeManager
+	// Create real manager with real NodeManager
 	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()
@@ -240,7 +239,7 @@ func TestOrchestratorWithNodeManagerCleanup(t *testing.T) {
 	peerLogger := &logger.Logger{Logger: logger}
 	peerManager := peermanager.NewManager(store, peerLogger)
 
-	// Create real Orchestrator with real NodeManager
+	// Create real manager with real NodeManager
 	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
 
 	ctx := context.Background()

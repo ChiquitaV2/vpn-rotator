@@ -12,7 +12,7 @@ import (
 )
 
 // MigratePeersFromNode migrates all active peers from a source node to target nodes
-func (o *Orchestrator) MigratePeersFromNode(ctx context.Context, sourceNodeID string, targetNodeID string) error {
+func (o *manager) MigratePeersFromNode(ctx context.Context, sourceNodeID string, targetNodeID string) error {
 	o.logger.Info("starting peer migration",
 		slog.String("source_node", sourceNodeID),
 		slog.String("target_node", targetNodeID))
@@ -100,7 +100,7 @@ func (o *Orchestrator) MigratePeersFromNode(ctx context.Context, sourceNodeID st
 }
 
 // migrateSinglePeer migrates a single peer from source to target node
-func (o *Orchestrator) migrateSinglePeer(ctx context.Context, peer db.Peer, sourceNodeID, targetNodeID string) error {
+func (o *manager) migrateSinglePeer(ctx context.Context, peer db.Peer, sourceNodeID, targetNodeID string) error {
 	// Get source and target node information
 	sourceNode, err := o.store.GetNode(ctx, sourceNodeID)
 	if err != nil {
@@ -177,7 +177,7 @@ func (o *Orchestrator) migrateSinglePeer(ctx context.Context, peer db.Peer, sour
 }
 
 // CreatePeerOnOptimalNode creates a new peer on the most optimal node
-func (o *Orchestrator) CreatePeerOnOptimalNode(ctx context.Context, publicKey string, presharedKey *string) (*peermanager.PeerConfig, error) {
+func (o *manager) CreatePeerOnOptimalNode(ctx context.Context, publicKey string, presharedKey *string) (*peermanager.PeerConfig, error) {
 	o.logger.Debug("creating peer on optimal node", slog.String("public_key", publicKey[:8]+"..."))
 
 	// Select the optimal node for the peer
@@ -242,7 +242,7 @@ func (o *Orchestrator) CreatePeerOnOptimalNode(ctx context.Context, publicKey st
 }
 
 // RemovePeerFromSystem removes a peer from both the node and database
-func (o *Orchestrator) RemovePeerFromSystem(ctx context.Context, peerID string) error {
+func (o *manager) RemovePeerFromSystem(ctx context.Context, peerID string) error {
 	o.logger.Debug("removing peer from system", slog.String("peer_id", peerID))
 
 	// Get peer information
@@ -297,7 +297,7 @@ func (o *Orchestrator) RemovePeerFromSystem(ctx context.Context, peerID string) 
 }
 
 // GetPeerStatistics returns comprehensive peer statistics across all nodes
-func (o *Orchestrator) GetPeerStatistics(ctx context.Context) (*peermanager.PeerStatistics, error) {
+func (o *manager) GetPeerStatistics(ctx context.Context) (*peermanager.PeerStatistics, error) {
 	o.logger.Debug("getting peer statistics")
 
 	stats, err := o.peerManager.GetPeerStatistics(ctx)

@@ -1,11 +1,13 @@
 package wireguard
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
 func TestConfigGenerator_GenerateConfig(t *testing.T) {
@@ -21,7 +23,7 @@ func TestConfigGenerator_GenerateConfig(t *testing.T) {
 
 	// Test parameters
 	clientKeyPath := tmpDir + "/client.key"
-	serverPublicKey := "test-server-public-key=="
+	serverPublicKey := "/yA8C9GGyQ+o3f5d3PCo/nI/aYgQ8Z5Rro/2r5kGfW4="
 	serverIP := "192.168.1.100"
 	serverPort := 51820
 	allowedIPs := "0.0.0.0/0"
@@ -63,4 +65,92 @@ func TestConfigGenerator_GenerateConfig(t *testing.T) {
 	if !strings.Contains(config, "PersistentKeepalive = 25") {
 		t.Errorf("PersistentKeepalive setting not found in generated config")
 	}
+}
+
+func TestConfigGenerator_ValidateConfig(t *testing.T) {
+	logger := logger.New("info", "text")
+	cg := NewConfigGenerator(logger)
+
+	validKeyPair, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("could not generate key pair: %v", err)
+	}
+
+	t.Run("valid config", func(t *testing.T) {
+		config := fmt.Sprintf(`
+[Interface]
+PrivateKey = %s
+[Peer]
+PublicKey = %s
+Endpoint = 1.2.3.4:51820
+`, validKeyPair.PrivateKey, validKeyPair.PublicKey)
+		err := cg.ValidateConfig(config)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+
+	t.Run("missing interface section", func(t *testing.T) {
+		config := `
+[Peer]
+PublicKey = somekey
+`
+		err := cg.ValidateConfig(config)
+		if err == nil {
+			t.Error("expected an error, got nil")
+		}
+	})
+
+	t.Run("missing peer section", func(t *testing.T) {
+		config := `
+[Interface]
+PrivateKey = somekey
+`
+		err := cg.ValidateConfig(config)
+		if err == nil {
+			t.Error("expected an error, got nil")
+		}
+	})
+
+	t.Run("invalid private key", func(t *testing.T) {
+		config := fmt.Sprintf(`
+[Interface]
+PrivateKey = invalid-key
+[Peer]
+PublicKey = %s
+Endpoint = 1.2.3.4:51820
+`, validKeyPair.PublicKey)
+		err := cg.ValidateConfig(config)
+		if err == nil {
+			t.Error("expected an error for invalid private key")
+		}
+	})
+
+	t.Run("invalid public key", func(t *testing.T) {
+		config := fmt.Sprintf(`
+[Interface]
+PrivateKey = %s
+[Peer]
+PublicKey = invalid-key
+Endpoint = 1.2.3.4:51820
+`, validKeyPair.PrivateKey)
+		err := cg.ValidateConfig(config)
+		if err == nil {
+			t.Error("expected an error for invalid public key")
+		}
+	})
+
+	t.Run("invalid endpoint", func(t *testing.T) {
+		config := fmt.Sprintf(`
+[Interface]
+PrivateKey = %s
+[Peer]
+PublicKey = %s
+Endpoint = not-an-endpoint
+`, validKeyPair.PrivateKey, validKeyPair.PublicKey)
+		err := cg.ValidateConfig(config)
+		if err == nil {
+			t.Error("expected an error for invalid endpoint")
+		}
+	})
 }

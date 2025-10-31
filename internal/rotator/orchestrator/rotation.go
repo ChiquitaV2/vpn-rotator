@@ -13,7 +13,7 @@ import (
 
 // ShouldRotate checks if a rotation is needed based on the current node status.
 // The rotation timing logic is now handled by the scheduler component.
-func (o *Orchestrator) ShouldRotate(ctx context.Context) (bool, error) {
+func (o *manager) ShouldRotate(ctx context.Context) (bool, error) {
 	_, err := o.store.GetActiveNode(ctx)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -29,7 +29,7 @@ func (o *Orchestrator) ShouldRotate(ctx context.Context) (bool, error) {
 
 // RotateNodes performs atomic rotation with peer migration: provision new node → migrate peers → mark old node destroying → commit.
 // This uses a multi-phase approach with rollback mechanisms to ensure peer continuity.
-func (o *Orchestrator) RotateNodes(ctx context.Context) error {
+func (o *manager) RotateNodes(ctx context.Context) error {
 	o.logger.Info("Starting atomic node rotation with peer migration")
 
 	// Phase 1: Get current active node
@@ -146,7 +146,7 @@ func (o *Orchestrator) RotateNodes(ctx context.Context) error {
 }
 
 // provisionInitialNode provisions the first node when none exists.
-func (o *Orchestrator) provisionInitialNode(ctx context.Context) error {
+func (o *manager) provisionInitialNode(ctx context.Context) error {
 	o.logger.Info("Provisioning initial node")
 
 	newConfig, err := o.nodeManager.CreateNode(ctx)
@@ -175,34 +175,8 @@ func (o *Orchestrator) provisionInitialNode(ctx context.Context) error {
 	return nil
 }
 
-// CleanupNodes destroys nodes scheduled for destruction.
-func (o *Orchestrator) CleanupNodes(ctx context.Context) error {
-	nodes, err := o.store.GetNodesForDestruction(ctx)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return fmt.Errorf("orchestrator: failed to get nodes for destruction: %w", err)
-	}
-
-	if len(nodes) == 0 {
-		o.logger.Info("no nodes to cleanup")
-		return nil
-	}
-
-	for _, node := range nodes {
-		o.logger.Info("cleaning up node", slog.String("node_id", node.ID))
-		if err := o.DestroyNode(ctx, node); err != nil {
-			o.logger.Error("failed to destroy node",
-				slog.String("node_id", node.ID),
-				slog.String("error", err.Error()))
-		}
-	}
-	return nil
-}
-
 // rollbackNodeCreation rolls back a newly created node when rotation fails
-func (o *Orchestrator) rollbackNodeCreation(ctx context.Context, nodeConfig *nodemanager.NodeConfig, reason string) {
+func (o *manager) rollbackNodeCreation(ctx context.Context, nodeConfig *nodemanager.NodeConfig, reason string) {
 	o.logger.Warn("Rolling back node creation",
 		slog.String("node_ip", nodeConfig.ServerIP),
 		slog.String("reason", reason))
@@ -230,7 +204,7 @@ func (o *Orchestrator) rollbackNodeCreation(ctx context.Context, nodeConfig *nod
 }
 
 // rollbackRotationWithPeerMigration rolls back a rotation that included peer migration
-func (o *Orchestrator) rollbackRotationWithPeerMigration(ctx context.Context, newNode, oldNode db.Node, reason string) {
+func (o *manager) rollbackRotationWithPeerMigration(ctx context.Context, newNode, oldNode db.Node, reason string) {
 	o.logger.Warn("Rolling back rotation with peer migration",
 		slog.String("new_node_id", newNode.ID),
 		slog.String("old_node_id", oldNode.ID),
@@ -291,7 +265,7 @@ func (o *Orchestrator) rollbackRotationWithPeerMigration(ctx context.Context, ne
 }
 
 // ValidateRotationPreconditions checks if rotation can proceed safely
-func (o *Orchestrator) ValidateRotationPreconditions(ctx context.Context) error {
+func (o *manager) ValidateRotationPreconditions(ctx context.Context) error {
 	o.logger.Debug("Validating rotation preconditions")
 
 	// Check if there's an active node
@@ -340,7 +314,7 @@ func (o *Orchestrator) ValidateRotationPreconditions(ctx context.Context) error 
 }
 
 // GetRotationStatus returns the current status of any ongoing rotation
-func (o *Orchestrator) GetRotationStatus(ctx context.Context) (*RotationStatus, error) {
+func (o *manager) GetRotationStatus(ctx context.Context) (*RotationStatus, error) {
 	// Get active node
 	activeNode, err := o.store.GetActiveNode(ctx)
 	if err != nil && err != sql.ErrNoRows {

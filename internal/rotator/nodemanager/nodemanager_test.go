@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/models"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager/provisioner"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 
@@ -22,18 +23,18 @@ type mockProvisioner struct {
 	notFoundError  bool
 }
 
-func (m *mockProvisioner) ProvisionNode(ctx context.Context) (*models.Node, error) {
+func (m *mockProvisioner) ProvisionNodeWithSubnet(ctx context.Context, subnet *net.IPNet) (*provisioner.Node, error) {
 	if m.provisionError != nil {
 		return nil, m.provisionError
 	}
 	if m.shouldFail {
 		return nil, errors.New("mock provisioner error")
 	}
-	return &models.Node{
+	return &provisioner.Node{
 		ID:        1,
 		IP:        "192.168.1.100",
 		PublicKey: "test-public-key==",
-		Status:    models.NodeStatusActive,
+		Status:    provisioner.NodeStatusActive,
 	}, nil
 }
 
@@ -65,13 +66,25 @@ func (m *mockHealthChecker) Check(ctx context.Context, nodeIP string) error {
 	return nil
 }
 
+type mockIpManager struct{}
+
+func (m *mockIpManager) AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.IPNet, error) {
+	_, ipnet, _ := net.ParseCIDR("10.0.0.0/24")
+	return ipnet, nil
+}
+
+func (m *mockIpManager) ReleaseNodeSubnet(ctx context.Context, nodeID string) error {
+	return nil
+}
+
 func TestNodeManager_CreateNode(t *testing.T) {
 	_, store := db.NewTestDB(t)
 	provisioner := &mockProvisioner{}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	ctx := context.Background()
 	config, err := manager.CreateNode(ctx)
@@ -98,9 +111,10 @@ func TestNodeManager_CreateNodeProvisionerError(t *testing.T) {
 		provisionError: errors.New("provisioner failed"),
 	}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	ctx := context.Background()
 	_, err := manager.CreateNode(ctx)
@@ -117,9 +131,10 @@ func TestNodeManager_DestroyNode(t *testing.T) {
 	_, store := db.NewTestDB(t)
 	provisioner := &mockProvisioner{}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	// Create a test node in the database first
 	node := db.SeedTestNode(t, store, db.CreateNodeParams{
@@ -143,9 +158,10 @@ func TestNodeManager_DestroyNodeNotFound(t *testing.T) {
 		notFoundError: true, // Simulate node not found on provider
 	}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	// Create a test node in the database first
 	node := db.SeedTestNode(t, store, db.CreateNodeParams{
@@ -169,9 +185,10 @@ func TestNodeManager_DestroyNodeProvisionerError(t *testing.T) {
 		destroyError: errors.New("provisioner destroy failed"),
 	}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	// Create a test node in the database first
 	node := db.SeedTestNode(t, store, db.CreateNodeParams{
@@ -196,9 +213,10 @@ func TestNodeManager_DestroyNodeStoreError(t *testing.T) {
 	_, store := db.NewTestDB(t)
 	provisioner := &mockProvisioner{}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	// Create a node that doesn't exist in the database
 	node := db.Node{
@@ -218,9 +236,10 @@ func TestNodeManager_GetNodeHealth(t *testing.T) {
 	_, store := db.NewTestDB(t)
 	provisioner := &mockProvisioner{}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	ctx := context.Background()
 	err := manager.GetNodeHealth(ctx, "192.168.1.100")
@@ -235,9 +254,10 @@ func TestNodeManager_GetNodeHealthError(t *testing.T) {
 	healthChecker := &mockHealthChecker{
 		checkError: errors.New("health check failed"),
 	}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	ctx := context.Background()
 	err := manager.GetNodeHealth(ctx, "192.168.1.100")
@@ -255,9 +275,10 @@ func TestNodeManager_WaitForNode(t *testing.T) {
 	_, store := db.NewTestDB(t)
 	provisioner := &mockProvisioner{}
 	healthChecker := &mockHealthChecker{}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	ctx := context.Background()
 	err := manager.WaitForNode(ctx, "192.168.1.100")
@@ -272,9 +293,10 @@ func TestNodeManager_WaitForNodeTimeout(t *testing.T) {
 	healthChecker := &mockHealthChecker{
 		shouldFail: true, // Always fail health checks
 	}
+	ipManager := &mockIpManager{}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key")
+	manager := New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
 
 	// Create a context with a very short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

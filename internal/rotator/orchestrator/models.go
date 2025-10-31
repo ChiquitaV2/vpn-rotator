@@ -14,14 +14,6 @@ type NodeInfo struct {
 
 // RotationStatus represents the current status of any ongoing rotation (consolidated from rotation.go)
 type RotationStatus struct {
-	// Legacy fields for backward compatibility
-	InProgress    bool      `json:"in_progress"`
-	OldNodeID     string    `json:"old_node_id,omitempty"`
-	NewNodeID     string    `json:"new_node_id,omitempty"`
-	StartedAt     time.Time `json:"started_at,omitempty"`
-	EstimatedEnd  time.Time `json:"estimated_end,omitempty"`
-	PeersMigrated int       `json:"peers_migrated"`
-	TotalPeers    int       `json:"total_peers"`
 
 	// Enhanced fields for detailed status
 	HasActiveNode       bool   `json:"has_active_node"`

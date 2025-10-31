@@ -57,3 +57,27 @@ func NewPeerOperationError(nodeIP, peerID, publicKey, operation string, cause er
 		Cause:     cause,
 	}
 }
+
+// WireguardError represents a WireGuard configuration or operation error on a node.
+type WireguardError struct {
+	NodeIP    string `json:"node_ip"`
+	Operation string `json:"operation"`
+	Cause     error  `json:"cause"`
+}
+
+func (e *WireguardError) Error() string {
+	return fmt.Sprintf("WireGuard error on node %s during operation '%s': %v", e.NodeIP, e.Operation, e.Cause)
+}
+
+func (e *WireguardError) Unwrap() error {
+	return e.Cause
+}
+
+// NewWireguardError creates a new WireguardError
+func NewWireguardError(nodeIP, operation string, cause error) *WireguardError {
+	return &WireguardError{
+		NodeIP:    nodeIP,
+		Operation: operation,
+		Cause:     cause,
+	}
+}

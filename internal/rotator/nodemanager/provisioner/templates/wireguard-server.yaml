@@ -136,9 +136,9 @@ users:
     #    passwd: "*"
     # Allow SSH access
     ssh_authorized_keys:
-  { { - range .SSHPublicKeys } }
-- "{{ . }}"
-  { { - end } }
+      {{range .SSHPublicKeys}} - {{.}}
+      {{end}}
+
 
 # SSH configuration
 # Disable root password login (security) - only allow key-based auth

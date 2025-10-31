@@ -224,7 +224,7 @@ func (pm *manager) ValidatePeerConfig(peer *PeerConfig) error {
 	}
 
 	// Validate public key format
-	if crypto.IsValidWireGuardKey(*peer.PresharedKey) {
+	if !crypto.IsValidWireGuardKey(*peer.PresharedKey) {
 		return fmt.Errorf("invalid preshared key")
 	}
 
@@ -245,7 +245,7 @@ func (pm *manager) ValidatePeerConfig(peer *PeerConfig) error {
 
 	// Validate preshared key if provided
 	if peer.PresharedKey != nil && *peer.PresharedKey != "" {
-		if crypto.IsValidWireGuardKey(*peer.PresharedKey) {
+		if !crypto.IsValidWireGuardKey(*peer.PresharedKey) {
 			return fmt.Errorf("invalid preshared key")
 		}
 	}
@@ -260,7 +260,7 @@ func (pm *manager) validateCreatePeerRequest(req *CreatePeerRequest) error {
 	}
 
 	// Validate public key format
-	if crypto.IsValidWireGuardKey(req.PublicKey) {
+	if !crypto.IsValidWireGuardKey(req.PublicKey) {
 		return fmt.Errorf("invalid public key")
 	}
 
@@ -276,7 +276,7 @@ func (pm *manager) validateCreatePeerRequest(req *CreatePeerRequest) error {
 
 	// Validate preshared key if provided
 	if req.PresharedKey != nil && *req.PresharedKey != "" {
-		if crypto.IsValidWireGuardKey(*req.PresharedKey) {
+		if !crypto.IsValidWireGuardKey(*req.PresharedKey) {
 			return fmt.Errorf("invalid preshared key")
 		}
 	}

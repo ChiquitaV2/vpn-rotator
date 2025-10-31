@@ -65,7 +65,7 @@ func (m *Manager) CreateNode(ctx context.Context) (*NodeConfig, error) {
 				slog.String("node_id", dbNode.ID),
 				slog.String("cleanup_error", cleanupErr.Error()))
 		}
-		return nil, fmt.Errorf("failed to provision new node: %w", err)
+		return nil, err
 	}
 
 	m.logger.Info("provisioned new node infrastructure",
@@ -189,7 +189,7 @@ func (m *Manager) DestroyNode(ctx context.Context, node db.Node) error {
 			m.logger.Warn("node not found on provider, assuming already destroyed",
 				slog.String("node_id", node.ID))
 		} else {
-			return fmt.Errorf("failed to destroy node on provider: %w", err)
+			return err
 		}
 	}
 
@@ -206,8 +206,13 @@ func (m *Manager) DestroyNode(ctx context.Context, node db.Node) error {
 func (m *Manager) GetNodeHealth(ctx context.Context, nodeIP string) error {
 	m.logger.Debug("checking node health", slog.String("ip", nodeIP))
 
-	if err := m.health.Check(ctx, nodeIP); err != nil {
+	if err := m.healthChecker.Check(ctx, nodeIP); err != nil {
 		return fmt.Errorf("node health check failed for %s: %w", nodeIP, err)
+	}
+
+	// Also validate wireguard interface as a secondary check
+	if err := m.validateWireGuardInterface(ctx, nodeIP); err != nil {
+		return fmt.Errorf("wireguard interface validation failed for %s: %w", nodeIP, err)
 	}
 
 	return nil
@@ -245,7 +250,7 @@ func (m *Manager) GetNodePublicKey(ctx context.Context, nodeIP string) (string, 
 		}
 	}
 
-	return "", fmt.Errorf("failed to get public key after 5 retries: %w", lastErr)
+	return "", NewSSHError(nodeIP, "cat /etc/wireguard/publickey", 5, false, lastErr)
 }
 
 // WaitForNode waits for a node to become healthy with timeout.
