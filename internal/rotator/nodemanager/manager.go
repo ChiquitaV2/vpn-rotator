@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ssh"
 )
@@ -51,34 +51,22 @@ type Manager struct {
 	logger        *slog.Logger
 	sshPrivateKey string
 	sshPool       *ssh.Pool
-	ipManager     ipmanager.IPManager
+	ipService     ip.Service
 }
 
-// New creates a new NodeManager.
-func New(
-	store db.Store,
-	provisioner provisioner.Provisioner,
-	healthChecker HealthChecker,
-	logger *slog.Logger,
-	sshPrivateKey string,
-	ipManager ipmanager.IPManager,
-) NodeManager {
-	sshPool := ssh.NewPool(sshPrivateKey, logger, 5*time.Minute)
+// New creates a new node manager
+func New(store db.Store, provisioner provisioner.Provisioner, healthChecker HealthChecker, logger *slog.Logger, sshKey string, ipService ip.Service) *Manager {
+	sshPool := ssh.NewPool(sshKey, logger, 5*time.Minute)
 
-	manager := &Manager{
+	return &Manager{
 		store:         store,
 		provisioner:   provisioner,
 		healthChecker: healthChecker,
 		logger:        logger,
-		sshPrivateKey: sshPrivateKey,
+		sshPrivateKey: sshKey,
 		sshPool:       sshPool,
-		ipManager:     ipManager,
+		ipService:     ipService,
 	}
-
-	// Start cleanup goroutine for idle connections
-	sshPool.StartCleanupRoutine()
-
-	return manager
 }
 
 // GetConnectionPoolStats returns statistics about the SSH connection pool

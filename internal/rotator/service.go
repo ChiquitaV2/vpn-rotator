@@ -15,7 +15,8 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/health"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/monitoring"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager/provisioner"
@@ -144,15 +145,17 @@ func (s *Service) initializeComponents() error {
 		return fmt.Errorf("failed to read SSH private key from %s: %w", s.config.Hetzner.SSHPrivateKeyPath, err)
 	}
 
-	// 5. Initialize IP manager (depends on store)
-	s.logger.Debug("initializing IP manager")
-	ipManager, err := ipmanager.NewIPManager(s.store, s.logger, nil) // Use default config
+	// 5. Initialize IP service (depends on store)
+	s.logger.Debug("initializing IP service")
+	ipRepo := store.NewSubnetRepository(s.store)
+	ipConfig := ip.DefaultNetworkConfig()
+	ipService, err := ip.NewService(ipRepo, ipConfig, s.logger)
 	if err != nil {
-		return fmt.Errorf("failed to initialize IP manager: %w", err)
+		return fmt.Errorf("failed to initialize IP service: %w", err)
 	}
-	s.logger.Debug("IP manager initialized successfully")
+	s.logger.Debug("IP service initialized successfully")
 
-	// 6. Initialize node manager (depends on store, provisioner, health checker, IP manager)
+	// 6. Initialize node manager (depends on store, provisioner, health checker, IP service)
 	s.logger.Debug("initializing node manager")
 	nodeManager := nodemanager.New(
 		s.store,
@@ -160,7 +163,7 @@ func (s *Service) initializeComponents() error {
 		healthChecker,
 		s.logger,
 		string(privateKeyBytes),
-		ipManager,
+		ipService,
 	)
 	s.logger.Debug("node manager initialized successfully")
 
@@ -173,9 +176,9 @@ func (s *Service) initializeComponents() error {
 	peerManager := peermanager.NewManager(s.store, peerLogger)
 	s.logger.Debug("peer manager initialized successfully")
 
-	// 8. Initialize orchestrator (depends on store, node manager, peer manager, IP manager)
+	// 8. Initialize orchestrator (depends on store, node manager, peer manager, IP service)
 	s.logger.Debug("initializing orchestrator")
-	orch := orchestrator.New(s.store, nodeManager, peerManager, ipManager, s.logger)
+	orch := orchestrator.New(s.store, nodeManager, peerManager, ipService, s.logger)
 	s.orchestrator = orch
 	s.logger.Debug("orchestrator initialized successfully")
 

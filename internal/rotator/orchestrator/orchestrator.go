@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
 )
@@ -67,17 +67,17 @@ type manager struct {
 	store       db.Store
 	nodeManager nodemanager.NodeManager
 	peerManager peermanager.Manager
-	ipManager   ipmanager.IPManager
+	ipService   ip.Service
 	logger      *slog.Logger
 }
 
-// New creates a new manager.
-func New(store db.Store, nodeManager nodemanager.NodeManager, peerManager peermanager.Manager, ipManager ipmanager.IPManager, logger *slog.Logger) Orchestrator {
+// New creates a new manager instance with all required dependencies
+func New(store db.Store, nodeManager *nodemanager.Manager, peerManager peermanager.Manager, ipService ip.Service, logger *slog.Logger) *manager {
 	return &manager{
 		store:       store,
 		nodeManager: nodeManager,
 		peerManager: peerManager,
-		ipManager:   ipManager,
+		ipService:   ipService,
 		logger:      logger,
 	}
 }

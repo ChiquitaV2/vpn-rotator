@@ -16,7 +16,6 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 

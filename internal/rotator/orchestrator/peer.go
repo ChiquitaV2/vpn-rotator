@@ -42,7 +42,7 @@ func (o *manager) MigratePeersFromNode(ctx context.Context, sourceNodeID string,
 		slog.Int("peer_count", len(peerConfigs)))
 
 	// Check target node capacity
-	availableIPs, err := o.ipManager.GetAvailableIPCount(ctx, targetNodeID)
+	availableIPs, err := o.ipService.GetAvailableIPCount(ctx, targetNodeID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: failed to check target node capacity: %w", err)
 	}
@@ -113,7 +113,7 @@ func (o *manager) migrateSinglePeer(ctx context.Context, peer db.Peer, sourceNod
 	}
 
 	// Allocate new IP on target node
-	newIP, err := o.ipManager.AllocateClientIP(ctx, targetNodeID)
+	newIP, err := o.ipService.AllocateClientIP(ctx, targetNodeID)
 	if err != nil {
 		return fmt.Errorf("failed to allocate IP on target node: %w", err)
 	}
@@ -150,7 +150,7 @@ func (o *manager) migrateSinglePeer(ctx context.Context, peer db.Peer, sourceNod
 	err = o.nodeManager.AddPeerToNode(ctx, targetNode.IpAddress, peerConfig)
 	if err != nil {
 		// Rollback: release the allocated IP and restore peer status
-		o.ipManager.ReleaseClientIP(ctx, targetNodeID, newIP)
+		o.ipService.ReleaseClientIP(ctx, targetNodeID, newIP)
 		o.peerManager.UpdatePeerStatus(ctx, peer.ID, "active")
 		return fmt.Errorf("failed to add peer to target node: %w", err)
 	}
@@ -160,7 +160,7 @@ func (o *manager) migrateSinglePeer(ctx context.Context, peer db.Peer, sourceNod
 	if err != nil {
 		// Rollback: remove peer from target node and release IP
 		o.nodeManager.RemovePeerFromNode(ctx, targetNode.IpAddress, peer.PublicKey)
-		o.ipManager.ReleaseClientIP(ctx, targetNodeID, newIP)
+		o.ipService.ReleaseClientIP(ctx, targetNodeID, newIP)
 		o.peerManager.UpdatePeerStatus(ctx, peer.ID, "active")
 		return fmt.Errorf("failed to update peer in database: %w", err)
 	}
@@ -187,7 +187,7 @@ func (o *manager) CreatePeerOnOptimalNode(ctx context.Context, publicKey string,
 	}
 
 	// Allocate IP for the peer
-	allocatedIP, err := o.ipManager.AllocateClientIP(ctx, nodeID)
+	allocatedIP, err := o.ipService.AllocateClientIP(ctx, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: failed to allocate IP: %w", err)
 	}
@@ -204,7 +204,7 @@ func (o *manager) CreatePeerOnOptimalNode(ctx context.Context, publicKey string,
 	peerConfig, err := o.peerManager.CreatePeerWithValidation(ctx, createReq)
 	if err != nil {
 		// Rollback: release the allocated IP
-		o.ipManager.ReleaseClientIP(ctx, nodeID, allocatedIP)
+		o.ipService.ReleaseClientIP(ctx, nodeID, allocatedIP)
 		return nil, fmt.Errorf("orchestrator: failed to create peer: %w", err)
 	}
 
@@ -213,7 +213,7 @@ func (o *manager) CreatePeerOnOptimalNode(ctx context.Context, publicKey string,
 	if err != nil {
 		// Rollback: remove peer and release IP
 		o.peerManager.RemovePeer(ctx, peerConfig.ID)
-		o.ipManager.ReleaseClientIP(ctx, nodeID, allocatedIP)
+		o.ipService.ReleaseClientIP(ctx, nodeID, allocatedIP)
 		return nil, fmt.Errorf("orchestrator: failed to get node information: %w", err)
 	}
 
@@ -229,7 +229,7 @@ func (o *manager) CreatePeerOnOptimalNode(ctx context.Context, publicKey string,
 	if err != nil {
 		// Rollback: remove peer from database and release IP
 		o.peerManager.RemovePeer(ctx, peerConfig.ID)
-		o.ipManager.ReleaseClientIP(ctx, nodeID, allocatedIP)
+		o.ipService.ReleaseClientIP(ctx, nodeID, allocatedIP)
 		return nil, fmt.Errorf("orchestrator: failed to add peer to node: %w", err)
 	}
 
@@ -273,7 +273,7 @@ func (o *manager) RemovePeerFromSystem(ctx context.Context, peerID string) error
 	if peerConfig.AllocatedIP != "" {
 		allocatedIP := net.ParseIP(peerConfig.AllocatedIP)
 		if allocatedIP != nil {
-			err = o.ipManager.ReleaseClientIP(ctx, peerConfig.NodeID, allocatedIP)
+			err = o.ipService.ReleaseClientIP(ctx, peerConfig.NodeID, allocatedIP)
 			if err != nil {
 				o.logger.Warn("failed to release IP address",
 					slog.String("peer_id", peerID),

@@ -86,7 +86,7 @@ func (o *manager) SelectNodeForPeer(ctx context.Context) (string, error) {
 		}
 
 		// Check if this node has available capacity
-		availableIPs, err := o.ipManager.GetAvailableIPCount(ctx, node.ID)
+		availableIPs, err := o.ipService.GetAvailableIPCount(ctx, node.ID)
 		if err != nil {
 			o.logger.Warn("failed to get available IP count for node",
 				slog.String("node_id", node.ID),
@@ -204,7 +204,7 @@ func (o *manager) ValidateNodePeerCapacity(ctx context.Context, nodeID string, a
 	}
 
 	// Get available IP count
-	availableIPs, err := o.ipManager.GetAvailableIPCount(ctx, nodeID)
+	availableIPs, err := o.ipService.GetAvailableIPCount(ctx, nodeID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: failed to get available IP count: %w", err)
 	}

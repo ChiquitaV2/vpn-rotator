@@ -1,0 +1,107 @@
+package ip
+
+import (
+	"fmt"
+	"math"
+	"net"
+)
+
+// NetworkConfig defines the network configuration for IP allocation
+type NetworkConfig struct {
+	// BaseNetwork is the overall network range (e.g., "10.8.0.0/16")
+	BaseNetwork string
+
+	// SubnetMask is the mask for individual node subnets (e.g., 24 for /24)
+	SubnetMask int
+
+	// CapacityThreshold is the percentage (0.0-1.0) at which capacity warnings trigger
+	CapacityThreshold float64
+}
+
+// DefaultNetworkConfig returns the default network configuration
+func DefaultNetworkConfig() *NetworkConfig {
+	return &NetworkConfig{
+		BaseNetwork:       "10.8.0.0/16",
+		SubnetMask:        24,
+		CapacityThreshold: 0.80, // 80% capacity warning threshold
+	}
+}
+
+// Validate checks if the network configuration is valid
+func (c *NetworkConfig) Validate() error {
+	// Validate base network
+	if err := ValidateCIDR(c.BaseNetwork); err != nil {
+		return fmt.Errorf("invalid base network: %w", err)
+	}
+
+	// Parse base network to validate structure
+	_, baseNet, err := net.ParseCIDR(c.BaseNetwork)
+	if err != nil {
+		return fmt.Errorf("failed to parse base network: %w", err)
+	}
+
+	// Validate subnet mask
+	baseOnes, _ := baseNet.Mask.Size()
+	if c.SubnetMask <= baseOnes {
+		return fmt.Errorf("subnet mask /%d must be larger than base network mask /%d", c.SubnetMask, baseOnes)
+	}
+
+	if c.SubnetMask > 30 {
+		return fmt.Errorf("subnet mask /%d is too restrictive (max /30)", c.SubnetMask)
+	}
+
+	// Validate capacity threshold
+	if c.CapacityThreshold <= 0 || c.CapacityThreshold > 1.0 {
+		return fmt.Errorf("capacity threshold must be between 0.0 and 1.0, got %.2f", c.CapacityThreshold)
+	}
+
+	return nil
+}
+
+// ParsedBaseNetwork returns the parsed base network
+func (c *NetworkConfig) ParsedBaseNetwork() (*net.IPNet, error) {
+	_, network, err := net.ParseCIDR(c.BaseNetwork)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse base network: %w", err)
+	}
+	return network, nil
+}
+
+// MaxSubnets returns the maximum number of subnets that can be allocated
+func (c *NetworkConfig) MaxSubnets() int {
+	_, baseNet, _ := net.ParseCIDR(c.BaseNetwork)
+	baseOnes, _ := baseNet.Mask.Size()
+	subnetBits := c.SubnetMask - baseOnes
+	return int(math.Pow(2, float64(subnetBits)))
+}
+
+// GenerateSubnetCIDR generates a subnet CIDR for the given index
+func (c *NetworkConfig) GenerateSubnetCIDR(index int) (string, error) {
+	baseIP, baseNet, err := net.ParseCIDR(c.BaseNetwork)
+	if err != nil {
+		return "", fmt.Errorf("invalid base network: %w", err)
+	}
+
+	baseOnes, _ := baseNet.Mask.Size()
+	subnetBits := c.SubnetMask - baseOnes
+
+	if index >= int(math.Pow(2, float64(subnetBits))) {
+		return "", fmt.Errorf("subnet index %d exceeds maximum %d", index, int(math.Pow(2, float64(subnetBits)))-1)
+	}
+
+	// Calculate subnet IP
+	ip := make(net.IP, len(baseIP.To4()))
+	copy(ip, baseIP.To4())
+
+	// Apply subnet index
+	shift := 32 - c.SubnetMask
+	ipInt := uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+	ipInt += uint32(index << shift)
+
+	ip[0] = byte(ipInt >> 24)
+	ip[1] = byte(ipInt >> 16)
+	ip[2] = byte(ipInt >> 8)
+	ip[3] = byte(ipInt)
+
+	return fmt.Sprintf("%s/%d", ip.String(), c.SubnetMask), nil
+}

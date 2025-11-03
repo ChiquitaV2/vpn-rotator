@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/ipmanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip/domain"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
@@ -24,23 +25,26 @@ func TestEndToEndNodeLifecycle(t *testing.T) {
 	healthChecker := &integrationMockHealthChecker{}
 
 	// Create logger
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	testLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	// Create IP manager for node manager
-	ipManager, err := ipmanager.NewIPManager(store, logger, nil)
+	// Create IP service with new architecture
+	ipRepo := store.NewSubnetRepository(store)
+	config := domain.DefaultNetworkConfig()
+	ipService, err := ip.NewService(ipRepo, config, testLogger)
 	if err != nil {
-		t.Fatalf("Failed to create IP manager: %v", err)
+		t.Fatalf("Failed to create IP service: %v", err)
 	}
+	ipAdapter := ip.NewLegacyAdapter(ipService)
 
 	// Create real NodeManager with mocked dependencies
-	nodeManager := nodemanager.New(store, provisioner, healthChecker, logger, "test-ssh-key", ipManager)
+	nodeManager := nodemanager.New(store, provisioner, healthChecker, testLogger, "test-ssh-key", ipAdapter)
 
 	// Create peer manager
-	peerLogger := &logger.Logger{Logger: logger}
+	peerLogger := &logger.Logger{Logger: testLogger}
 	peerManager := peermanager.NewManager(store, peerLogger)
 
 	// Create real manager with real NodeManager
-	orch := orchestrator.New(store, nodeManager, peerManager, ipManager, logger)
+	orch := orchestrator.New(store, nodeManager, peerManager, ipAdapter, testLogger)
 
 	ctx := context.Background()
 

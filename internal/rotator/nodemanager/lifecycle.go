@@ -36,7 +36,7 @@ func (m *Manager) CreateNode(ctx context.Context) (*NodeConfig, error) {
 	m.logger.Info("created provisioning node record in database", slog.String("node_id", dbNode.ID))
 
 	// Step 2: Allocate subnet for this node (now that the node record exists)
-	subnet, err := m.ipManager.AllocateNodeSubnet(ctx, nodeID)
+	subnet, err := m.ipService.AllocateNodeSubnet(ctx, nodeID)
 	if err != nil {
 		// Clean up the database record since subnet allocation failed
 		if cleanupErr := m.store.DeleteNode(ctx, nodeID); cleanupErr != nil {
@@ -55,7 +55,7 @@ func (m *Manager) CreateNode(ctx context.Context) (*NodeConfig, error) {
 	provisionedNode, err := m.provisioner.ProvisionNodeWithSubnet(ctx, subnet)
 	if err != nil {
 		// Clean up the subnet and database record since provisioning failed
-		if cleanupErr := m.ipManager.ReleaseNodeSubnet(ctx, nodeID); cleanupErr != nil {
+		if cleanupErr := m.ipService.ReleaseNodeSubnet(ctx, nodeID); cleanupErr != nil {
 			m.logger.Error("failed to cleanup allocated subnet after provisioning failure",
 				slog.String("node_id", nodeID),
 				slog.String("cleanup_error", cleanupErr.Error()))
@@ -90,7 +90,7 @@ func (m *Manager) CreateNode(ctx context.Context) (*NodeConfig, error) {
 				slog.String("node_id", dbNode.ID),
 				slog.String("cleanup_error", cleanupErr.Error()))
 		}
-		if cleanupErr := m.ipManager.ReleaseNodeSubnet(ctx, nodeID); cleanupErr != nil {
+		if cleanupErr := m.ipService.ReleaseNodeSubnet(ctx, nodeID); cleanupErr != nil {
 			m.logger.Error("failed to cleanup allocated subnet after update failure",
 				slog.String("node_id", nodeID),
 				slog.String("cleanup_error", cleanupErr.Error()))
@@ -121,7 +121,7 @@ func (m *Manager) CreateNode(ctx context.Context) (*NodeConfig, error) {
 				slog.String("node_id", dbNode.ID),
 				slog.String("cleanup_error", cleanupErr.Error()))
 		}
-		if cleanupErr := m.ipManager.ReleaseNodeSubnet(ctx, nodeID); cleanupErr != nil {
+		if cleanupErr := m.ipService.ReleaseNodeSubnet(ctx, nodeID); cleanupErr != nil {
 			m.logger.Error("failed to cleanup allocated subnet after activation failure",
 				slog.String("node_id", nodeID),
 				slog.String("cleanup_error", cleanupErr.Error()))
@@ -169,7 +169,7 @@ func (m *Manager) DestroyNode(ctx context.Context, node db.Node) error {
 	}
 
 	// Release the node's subnet allocation
-	if err := m.ipManager.ReleaseNodeSubnet(ctx, node.ID); err != nil {
+	if err := m.ipService.ReleaseNodeSubnet(ctx, node.ID); err != nil {
 		m.logger.Warn("failed to release node subnet",
 			slog.String("node_id", node.ID),
 			slog.String("error", err.Error()))

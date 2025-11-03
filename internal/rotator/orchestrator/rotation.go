@@ -77,7 +77,7 @@ func (o *manager) RotateNodes(ctx context.Context) error {
 
 	// Phase 4: Allocate subnet for new node if peers need to be migrated
 	if len(activePeers) > 0 {
-		_, err = o.ipManager.AllocateNodeSubnet(ctx, newNode.ID)
+		_, err = o.ipService.AllocateNodeSubnet(ctx, newNode.ID)
 		if err != nil {
 			o.rollbackNodeCreation(ctx, newConfig, "failed to allocate subnet for new node")
 			return fmt.Errorf("orchestrator: failed to allocate subnet for new node: %w", err)
@@ -161,7 +161,7 @@ func (o *manager) provisionInitialNode(ctx context.Context) error {
 	}
 
 	// Allocate subnet for the initial node
-	_, err = o.ipManager.AllocateNodeSubnet(ctx, newNode.ID)
+	_, err = o.ipService.AllocateNodeSubnet(ctx, newNode.ID)
 	if err != nil {
 		o.logger.Error("Failed to allocate subnet for initial node",
 			slog.String("node_id", newNode.ID),
@@ -243,7 +243,7 @@ func (o *manager) rollbackRotationWithPeerMigration(ctx context.Context, newNode
 	}
 
 	// Step 3: Release subnet allocated to new node
-	err = o.ipManager.ReleaseNodeSubnet(ctx, newNode.ID)
+	err = o.ipService.ReleaseNodeSubnet(ctx, newNode.ID)
 	if err != nil {
 		o.logger.Error("Failed to release new node subnet during rollback",
 			slog.String("new_node_id", newNode.ID),
