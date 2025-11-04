@@ -44,7 +44,7 @@ func (a *SubnetAllocator) FindNextAvailableSubnet(ctx context.Context, usedCIDRs
 		}
 
 		// Generate a temporary node ID for validation
-		subnet, err := NewSubnet("", network)
+		subnet, err := NewSubnet("temporary-id", network)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create subnet: %w", err)
 		}

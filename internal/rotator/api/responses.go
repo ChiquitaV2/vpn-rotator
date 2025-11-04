@@ -33,3 +33,14 @@ func WriteErrorWithRequestID(w http.ResponseWriter, statusCode int, code, messag
 		},
 	})
 }
+
+// WriteError writes an error JSON response without request ID.
+func WriteError(w http.ResponseWriter, statusCode int, code, message string) error {
+	return WriteJSON(w, statusCode, api.Response[any]{
+		Success: false,
+		Error: &api.ErrorInfo{
+			Code:    code,
+			Message: message,
+		},
+	})
+}

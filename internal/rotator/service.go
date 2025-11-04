@@ -2,7 +2,6 @@ package rotator
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,17 +12,8 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/api"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/health"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/monitoring"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/nodemanager/provisioner"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // SchedulerInterface defines the interface for scheduler operations
@@ -40,19 +30,12 @@ type APIServerInterface interface {
 
 // Service coordinates all rotator service components and manages their lifecycle
 type Service struct {
-	config       *config.Config
-	orchestrator orchestrator.Orchestrator
-	scheduler    SchedulerInterface
-	apiServer    APIServerInterface
-	logger       *slog.Logger
+	config     *config.Config
+	components *ServiceComponents
+	scheduler  SchedulerInterface
+	apiServer  APIServerInterface
+	logger     *slog.Logger
 
-	// Component instances for cleanup
-	store       db.Store
-	provisioner provisioner.Provisioner
-
-	// Circuit breaker instances for monitoring
-	provisionerCB *provisioner.CircuitBreaker
-	healthCB      *health.CircuitBreakerHealthChecker
 	// Internal state for lifecycle management
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -65,7 +48,7 @@ type Service struct {
 	disableSignalHandling bool // For testing
 }
 
-// NewService creates a new Service instance and initializes all components in proper dependency order
+// NewService creates a new Service instance using the layered architecture
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -77,7 +60,7 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 		signalChan: make(chan os.Signal, 1),
 	}
 
-	// Initialize components in dependency order
+	// Initialize components using service factory
 	if err := service.initializeComponents(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to initialize service components: %w", err)
@@ -86,136 +69,70 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	return service, nil
 }
 
-// initializeComponents creates and wires all service components in proper dependency order
+// initializeComponents creates and wires all service components using the layered architecture
 func (s *Service) initializeComponents() error {
-	s.logger.Info("initializing service components")
+	s.logger.Info("initializing service components with layered architecture")
 
-	// 1. Initialize database store (foundational dependency)
-	s.logger.Debug("initializing database store")
-	baseStore, err := db.NewStore(&db.Config{
-		Path:            s.config.DB.Path,
-		MaxOpenConns:    s.config.DB.MaxOpenConns,
-		MaxIdleConns:    s.config.DB.MaxIdleConns,
-		ConnMaxLifetime: s.config.DB.ConnMaxLifetime,
-	})
+	// Create service factory
+	factory := NewServiceFactory(s.config, s.logger)
+
+	// Create all components with proper dependency injection
+	components, err := factory.CreateComponents()
 	if err != nil {
-		return fmt.Errorf("failed to initialize database store: %w", err)
+		return fmt.Errorf("failed to create service components: %w", err)
 	}
 
-	s.store = baseStore
-	s.logger.Debug("database store with initialized successfully")
+	s.components = components
 
-	// 2. Initialize provisioner (infrastructure dependency)
-	s.logger.Debug("initializing provisioner")
-	hetznerProvisioner, err := provisioner.NewHetzner(
-		s.config.Hetzner.APIToken,
-		&provisioner.HetznerConfig{
-			ServerType:   s.config.Hetzner.ServerTypes[0], // Use first server type
-			Image:        s.config.Hetzner.Image,
-			Location:     s.config.Hetzner.Locations[0], // Use first location
-			SSHPublicKey: s.config.Hetzner.SSHKey,
-		},
-		s.logger,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to initialize Hetzner provisioner: %w", err)
+	// Initialize scheduler using application services
+	if err := s.initializeScheduler(); err != nil {
+		return fmt.Errorf("failed to initialize scheduler: %w", err)
 	}
 
-	// Wrap provisioner with circuit breaker for resilience
-	s.logger.Debug("initializing provisioner circuit breaker")
-	circuitBreakerConfig := provisioner.DefaultCircuitBreakerConfig()
-	s.provisionerCB = provisioner.NewCircuitBreaker(hetznerProvisioner, circuitBreakerConfig, s.logger)
-	s.provisioner = s.provisionerCB
-	s.logger.Debug("provisioner with circuit breaker initialized successfully")
-
-	// 3. Initialize health checker
-	s.logger.Debug("initializing health checker")
-	baseHealthChecker := health.NewHTTPHealthChecker()
-	// Wrap health checker with circuit breaker for resilience
-	s.logger.Debug("initializing health check circuit breaker")
-	s.logger.Debug("health checker with circuit breaker initialized successfully")
-	healthCircuitBreakerConfig := health.DefaultCircuitBreakerConfig()
-	s.healthCB = health.NewCircuitBreakerHealthChecker(baseHealthChecker, healthCircuitBreakerConfig, s.logger)
-	healthChecker := s.healthCB
-
-	// 4. Read SSH private key
-	s.logger.Debug("reading SSH private key")
-	privateKeyBytes, err := os.ReadFile(s.config.Hetzner.SSHPrivateKeyPath)
-	if err != nil {
-		return fmt.Errorf("failed to read SSH private key from %s: %w", s.config.Hetzner.SSHPrivateKeyPath, err)
+	// Initialize API server using application services
+	if err := s.initializeAPIServer(); err != nil {
+		return fmt.Errorf("failed to initialize API server: %w", err)
 	}
 
-	// 5. Initialize IP service (depends on store)
-	s.logger.Debug("initializing IP service")
-	ipRepo := store.NewSubnetRepository(s.store)
-	ipConfig := ip.DefaultNetworkConfig()
-	ipService, err := ip.NewService(ipRepo, ipConfig, s.logger)
-	if err != nil {
-		return fmt.Errorf("failed to initialize IP service: %w", err)
-	}
-	s.logger.Debug("IP service initialized successfully")
+	s.logger.Info("all service components initialized successfully")
+	return nil
+}
 
-	// 6. Initialize node manager (depends on store, provisioner, health checker, IP service)
-	s.logger.Debug("initializing node manager")
-	nodeManager := nodemanager.New(
-		s.store,
-		s.provisioner,
-		healthChecker,
-		s.logger,
-		string(privateKeyBytes),
-		ipService,
-	)
-	s.logger.Debug("node manager initialized successfully")
+// initializeScheduler creates the scheduler using application services
+func (s *Service) initializeScheduler() error {
+	s.logger.Debug("initializing scheduler with application services")
 
-	// 7. Initialize peer manager (depends on store and repository)
-	s.logger.Debug("initializing peer manager")
-	// Create a logger wrapper for peer manager
-	peerLogger := &logger.Logger{Logger: s.logger}
-	// Create repository manager for peermanager
-	//reposManager := repository.NewRepositoryManager(s.store, peerLogger)
-	peerManager := peermanager.NewManager(s.store, peerLogger)
-	s.logger.Debug("peer manager initialized successfully")
-
-	// 8. Initialize orchestrator (depends on store, node manager, peer manager, IP service)
-	s.logger.Debug("initializing orchestrator")
-	orch := orchestrator.New(s.store, nodeManager, peerManager, ipService, s.logger)
-	s.orchestrator = orch
-	s.logger.Debug("orchestrator initialized successfully")
-
-	// 9. Initialize scheduler manager (depends on orchestrator)
-	s.logger.Debug("initializing scheduler manager")
-	schedulerManager := scheduler.NewManager(
+	// Create scheduler that uses VPN service for rotation and cleanup
+	schedulerManager := scheduler.NewManagerWithServices(
 		s.config.Scheduler.RotationInterval,
 		s.config.Scheduler.CleanupInterval,
 		s.config.Scheduler.CleanupAge,
-		orch, // RotationManager interface
-		orch, // CleanupManager interface (orchestrator implements both)
+		s.components.VPNService,
 		s.logger,
 	)
+
 	s.scheduler = schedulerManager
-	s.logger.Debug("scheduler manager initialized successfully")
+	s.logger.Debug("scheduler initialized successfully")
+	return nil
+}
 
-	// 10. Initialize circuit breaker monitoring
-	s.logger.Debug("initializing circuit breaker monitoring")
-	cbMonitor := monitoring.NewCircuitBreakerMonitor(s.provisionerCB, s.healthCB)
-	s.logger.Debug("circuit breaker monitoring initialized successfully")
+// initializeAPIServer creates the API server using application services
+func (s *Service) initializeAPIServer() error {
+	s.logger.Debug("initializing API server with application services")
 
-	// 11. Initialize API server (depends on orchestrator, peer manager, IP manager, node manager, and monitoring)
-	s.logger.Debug("initializing API server")
-	apiServer := api.NewServerWithMonitoring(
+	// Create API server that uses application services
+	apiServer := api.NewServerWithApplicationServices(
 		api.ServerConfig{
 			Address:     s.config.API.ListenAddr,
 			CORSOrigins: []string{"*"}, // TODO: Make configurable
 		},
-		s.orchestrator,
-		peerManager,
-		cbMonitor,
+		s.components.VPNService,
+		s.components.AdminService,
 		s.logger,
 	)
+
 	s.apiServer = apiServer
 	s.logger.Debug("API server initialized successfully")
-
-	s.logger.Info("all service components initialized successfully")
 	return nil
 }
 
@@ -365,7 +282,7 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 
 	// 3. Clean up active nodes before shutdown
-	if s.orchestrator != nil {
+	if s.components.VPNService != nil {
 		s.logger.Info("cleaning up active nodes")
 		if err := s.cleanupActiveNodes(shutdownCtx); err != nil {
 			s.logger.Error("failed to cleanup active nodes", "error", err)
@@ -376,9 +293,9 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 
 	// 4. Close database store
-	if s.store != nil {
+	if s.components != nil && s.components.Store != nil {
 		s.logger.Info("closing database store")
-		if err := s.store.Close(); err != nil {
+		if err := s.components.Store.Close(); err != nil {
 			s.logger.Error("failed to close database store", "error", err)
 			lastErr = err
 		} else {
@@ -433,8 +350,8 @@ func (s *Service) Health() error {
 		return fmt.Errorf("service context cancelled")
 	default:
 		// Optionally check database connectivity
-		if s.store != nil {
-			if err := s.store.Ping(context.Background()); err != nil {
+		if s.components != nil && s.components.Store != nil {
+			if err := s.components.Store.Ping(context.Background()); err != nil {
 				return fmt.Errorf("database health check failed: %w", err)
 			}
 		}
@@ -456,17 +373,13 @@ func (s *Service) Context() context.Context {
 
 // cleanupActiveNodes destroys all active nodes during service shutdown
 func (s *Service) cleanupActiveNodes(ctx context.Context) error {
-	if s.store == nil {
+	if s.components == nil || s.components.NodeService == nil {
 		return nil
 	}
 
-	// Get all active nodes
-	activeNodes, err := s.store.GetNodesByStatus(ctx, "active")
+	// Get all active nodes using node service
+	activeNodes, err := s.components.NodeService.ListNodes(ctx, node.Filters{})
 	if err != nil {
-		if err == sql.ErrNoRows {
-			s.logger.Debug("no active nodes to cleanup")
-			return nil
-		}
 		return fmt.Errorf("failed to get active nodes: %w", err)
 	}
 
@@ -478,16 +391,16 @@ func (s *Service) cleanupActiveNodes(ctx context.Context) error {
 	s.logger.Info("cleaning up active nodes", slog.Int("count", len(activeNodes)))
 
 	var lastErr error
-	for _, node := range activeNodes {
-		s.logger.Info("destroying active node", slog.String("node_id", node.ID))
+	for _, activeNode := range activeNodes {
+		s.logger.Info("destroying active node", slog.String("node_id", activeNode.ID))
 
-		if err := s.orchestrator.DestroyNode(ctx, node); err != nil {
+		if err := s.components.NodeService.DestroyNode(ctx, activeNode.ID); err != nil {
 			s.logger.Error("failed to destroy active node",
-				slog.String("node_id", node.ID),
+				slog.String("node_id", activeNode.ID),
 				slog.String("error", err.Error()))
 			lastErr = err
 		} else {
-			s.logger.Info("destroyed active node", slog.String("node_id", node.ID))
+			s.logger.Info("destroyed active node", slog.String("node_id", activeNode.ID))
 		}
 	}
 

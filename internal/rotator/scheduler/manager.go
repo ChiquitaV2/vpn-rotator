@@ -123,3 +123,59 @@ func (m *Manager) IsRunning() bool {
 	defer m.mu.RUnlock()
 	return m.running
 }
+
+// VPNServiceRotationManager defines the interface for VPN service rotation operations
+type VPNServiceRotationManager interface {
+	RotateNodes(ctx context.Context) error
+	CleanupInactiveResources(ctx context.Context) error
+}
+
+// NewManagerWithServices creates a new scheduler manager that uses VPN service for operations
+func NewManagerWithServices(
+	rotationInterval time.Duration,
+	cleanupInterval time.Duration,
+	cleanupAge time.Duration,
+	vpnService VPNServiceRotationManager,
+	logger *slog.Logger,
+) *Manager {
+	// Create adapters that implement the old interfaces using the VPN service
+	rotationAdapter := &vpnServiceRotationAdapter{vpnService: vpnService}
+	cleanupAdapter := &vpnServiceCleanupAdapter{vpnService: vpnService}
+
+	return &Manager{
+		rotationScheduler: NewRotationScheduler(rotationInterval, rotationAdapter, logger),
+		cleanupScheduler:  NewCleanupScheduler(cleanupInterval, cleanupAge, cleanupAdapter, logger),
+		logger:            logger,
+	}
+}
+
+// vpnServiceRotationAdapter adapts VPN service to RotationManager interface
+type vpnServiceRotationAdapter struct {
+	vpnService VPNServiceRotationManager
+}
+
+func (a *vpnServiceRotationAdapter) ShouldRotate(ctx context.Context) (bool, error) {
+	// For now, always return true to let the VPN service decide
+	// In a full implementation, this could check system metrics
+	return true, nil
+}
+
+func (a *vpnServiceRotationAdapter) RotateNodes(ctx context.Context) error {
+	return a.vpnService.RotateNodes(ctx)
+}
+
+// vpnServiceCleanupAdapter adapts VPN service to CleanupManager interface
+type vpnServiceCleanupAdapter struct {
+	vpnService VPNServiceRotationManager
+}
+
+func (a *vpnServiceCleanupAdapter) GetOrphanedNodes(ctx context.Context, age time.Duration) ([]string, error) {
+	// The VPN service handles orphaned resource detection internally
+	// Return empty slice to trigger cleanup
+	return []string{}, nil
+}
+
+func (a *vpnServiceCleanupAdapter) DeleteNode(ctx context.Context, serverID string) error {
+	// Use the VPN service cleanup method instead of individual node deletion
+	return a.vpnService.CleanupInactiveResources(ctx)
+}

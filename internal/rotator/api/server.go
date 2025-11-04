@@ -7,24 +7,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
 )
-
-// PeerManagerInterface defines the interface for peer management operations.
-type PeerManagerInterface interface {
-	CreatePeer(ctx context.Context, req *peermanager.CreatePeerRequest) (*peermanager.PeerConfig, error)
-	RemovePeer(ctx context.Context, peerID string) error
-	GetPeer(ctx context.Context, peerID string) (*peermanager.PeerConfig, error)
-	ListPeers(ctx context.Context, filters *peermanager.PeerFilters) ([]*peermanager.PeerConfig, error)
-	ValidatePeerConfig(peer *peermanager.PeerConfig) error
-}
 
 // Server represents the HTTP API server with proper lifecycle management.
 type Server struct {
 	server       *http.Server
-	orchestrator orchestrator.Orchestrator
-	peerManager  PeerManagerInterface
+	vpnService   application.VPNService
+	adminService application.AdminService
 	logger       *slog.Logger
 	corsOrigins  []string
 	cbMonitor    CircuitBreakerMonitor
@@ -42,10 +32,10 @@ type CircuitBreakerMonitor interface {
 }
 
 // NewServer creates a new API server instance.
-func NewServer(config ServerConfig, orchestrator orchestrator.Orchestrator, peerManager PeerManagerInterface, logger *slog.Logger) *Server {
+func NewServer(config ServerConfig, vpnService application.VPNService, adminService application.AdminService, logger *slog.Logger) *Server {
 	return &Server{
-		orchestrator: orchestrator,
-		peerManager:  peerManager,
+		vpnService:   vpnService,
+		adminService: adminService,
 		logger:       logger,
 		corsOrigins:  config.CORSOrigins,
 		server: &http.Server{
@@ -58,10 +48,10 @@ func NewServer(config ServerConfig, orchestrator orchestrator.Orchestrator, peer
 }
 
 // NewServerWithMonitoring creates a new API server instance with circuit breaker monitoring.
-func NewServerWithMonitoring(config ServerConfig, orchestrator orchestrator.Orchestrator, peerManager PeerManagerInterface, cbMonitor CircuitBreakerMonitor, logger *slog.Logger) *Server {
+func NewServerWithMonitoring(config ServerConfig, vpnService application.VPNService, adminService application.AdminService, cbMonitor CircuitBreakerMonitor, logger *slog.Logger) *Server {
 	server := &Server{
-		orchestrator: orchestrator,
-		peerManager:  peerManager,
+		vpnService:   vpnService,
+		adminService: adminService,
 		logger:       logger,
 		corsOrigins:  config.CORSOrigins,
 		server: &http.Server{
@@ -132,6 +122,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc("GET /api/v1/peers", s.listPeersHandler())
 	mux.HandleFunc("GET /api/v1/peers/{peerID}", s.getPeerHandler())
 
+	// Admin routes
+	mux.HandleFunc("GET /api/v1/admin/status", s.systemStatusHandler())
+	mux.HandleFunc("GET /api/v1/admin/nodes/stats", s.nodeStatsHandler())
+	mux.HandleFunc("GET /api/v1/admin/peers/stats", s.peerStatsHandler())
+	mux.HandleFunc("POST /api/v1/admin/rotation/force", s.forceRotationHandler())
+	mux.HandleFunc("GET /api/v1/admin/rotation/status", s.rotationStatusHandler())
+	mux.HandleFunc("POST /api/v1/admin/cleanup", s.manualCleanupHandler())
+	mux.HandleFunc("GET /api/v1/admin/health", s.systemHealthHandler())
+
 	// Register circuit breaker monitoring endpoint
 	if s.cbMonitor != nil {
 		mux.HandleFunc("/api/v1/circuit-breakers", s.cbMonitor.Handler())
@@ -142,8 +141,30 @@ func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
 		Recovery(s.logger),
 		RequestID,
 		Logging(s.logger),
+		ErrorHandling(s.logger),
 		CORS(s.corsOrigins),
 	)(mux)
 
 	return handler
+}
+
+// NewServerWithApplicationServices creates a new API server instance using application services
+func NewServerWithApplicationServices(
+	config ServerConfig,
+	vpnService application.VPNService,
+	adminService application.AdminService,
+	logger *slog.Logger,
+) *Server {
+	return &Server{
+		vpnService:   vpnService,
+		adminService: adminService,
+		logger:       logger,
+		corsOrigins:  config.CORSOrigins,
+		server: &http.Server{
+			Addr:         config.Address,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		},
+	}
 }

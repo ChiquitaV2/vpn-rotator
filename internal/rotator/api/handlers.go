@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/peermanager"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
@@ -43,9 +43,6 @@ func (s *Server) connectHandler() http.HandlerFunc {
 		}
 
 		// Handle key management
-		var publicKey string
-		var privateKey *string
-
 		if req.GenerateKeys {
 			keyPair, err := crypto.GenerateKeyPair()
 			if err != nil {
@@ -53,45 +50,19 @@ func (s *Server) connectHandler() http.HandlerFunc {
 				_ = WriteErrorWithRequestID(w, http.StatusInternalServerError, "key_generation_error", "Failed to generate WireGuard keys", requestID)
 				return
 			}
-			publicKey = keyPair.PublicKey
-			privateKey = &keyPair.PrivateKey
-		} else {
-			publicKey = *req.PublicKey
+			req.PublicKey = &keyPair.PublicKey
 		}
 
-		// Use orchestrator to create peer on an optimal node
-		peerConfig, err := s.orchestrator.CreatePeerOnOptimalNode(ctx, publicKey, nil) // Assuming no preshared key from this endpoint
+		// Use VPN service to connect peer
+		response, err := s.vpnService.ConnectPeer(ctx, req)
 		if err != nil {
-			s.logger.ErrorContext(ctx, "failed to create peer on optimal node", "error", err)
-			_ = WriteErrorWithRequestID(w, http.StatusServiceUnavailable, "peer_creation_error", "Failed to create peer", requestID)
+			s.logger.ErrorContext(ctx, "failed to connect peer", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
 			return
 		}
 
-		// Get node config for the response
-		nodeConfig, err := s.orchestrator.GetNodeConfig(ctx, peerConfig.NodeID)
-		if err != nil {
-			s.logger.ErrorContext(ctx, "failed to get node config after peer creation", "error", err, "peer_id", peerConfig.ID)
-			// Attempt to roll back by removing the peer
-			if cleanupErr := s.orchestrator.RemovePeerFromSystem(ctx, peerConfig.ID); cleanupErr != nil {
-				s.logger.ErrorContext(ctx, "failed to cleanup peer after node config failure", "error", cleanupErr, "peer_id", peerConfig.ID)
-			}
-			_ = WriteErrorWithRequestID(w, http.StatusInternalServerError, "config_error", "Failed to retrieve VPN configuration after peer creation", requestID)
-			return
-		}
-
-		// Build response
-		response := api.ConnectResponse{
-			PeerID:           peerConfig.ID,
-			ServerPublicKey:  nodeConfig.ServerPublicKey,
-			ServerIP:         nodeConfig.ServerIP,
-			ServerPort:       nodeConfig.ServerPort,
-			ClientIP:         peerConfig.AllocatedIP,
-			ClientPrivateKey: privateKey,
-			DNS:              []string{"9.9.9.9", "149.112.112.112"}, // Default DNS servers
-			AllowedIPs:       []string{"0.0.0.0/0"},                  // Route all traffic through VPN
-		}
-
-		s.logger.InfoContext(ctx, "peer connected successfully", "peer_id", peerConfig.ID, "node_id", peerConfig.NodeID, "client_ip", peerConfig.AllocatedIP)
+		s.logger.InfoContext(ctx, "peer connected successfully", "peer_id", response.PeerID, "client_ip", response.ClientIP)
 
 		if err := WriteSuccess(w, response); err != nil {
 			s.logger.ErrorContext(ctx, "failed to encode connect response", "error", err)
@@ -119,12 +90,12 @@ func (s *Server) disconnectHandler() http.HandlerFunc {
 			return
 		}
 
-		// Use orchestrator to remove peer from the system
-		err := s.orchestrator.RemovePeerFromSystem(ctx, req.PeerID)
+		// Use VPN service to disconnect peer
+		err := s.vpnService.DisconnectPeer(ctx, req.PeerID)
 		if err != nil {
-			// TODO: Differentiate between not found and other errors
-			s.logger.ErrorContext(ctx, "failed to remove peer from system", "error", err, "peer_id", req.PeerID)
-			_ = WriteErrorWithRequestID(w, http.StatusInternalServerError, "peer_removal_error", "Failed to remove peer", requestID)
+			s.logger.ErrorContext(ctx, "failed to disconnect peer", "error", err, "peer_id", req.PeerID)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
 			return
 		}
 
@@ -155,69 +126,64 @@ func (s *Server) listPeersHandler() http.HandlerFunc {
 			return
 		}
 
-		// Build filters from parameters
-		filters := &peermanager.PeerFilters{}
-
-		if nodeID, exists := params["node_id"]; exists {
-			nodeIDStr := nodeID.(string)
-			filters.NodeID = &nodeIDStr
-		}
-
-		if status, exists := params["status"]; exists {
-			statusStr := status.(string)
-			statusEnum := peermanager.PeerStatus(statusStr)
-			filters.Status = &statusEnum
-		}
-
-		if limit, exists := params["limit"]; exists {
-			limitInt := limit.(int)
-			filters.Limit = &limitInt
-		}
-
-		if offset, exists := params["offset"]; exists {
-			offsetInt := offset.(int)
-			filters.Offset = &offsetInt
-		}
-
-		// Get peers from peer manager
-		peers, err := s.peerManager.ListPeers(ctx, filters)
+		// Get active peers from VPN service
+		peers, err := s.vpnService.ListActivePeers(ctx)
 		if err != nil {
 			s.logger.ErrorContext(ctx, "failed to list peers", "error", err)
-			_ = WriteErrorWithRequestID(w, http.StatusInternalServerError,
-				"peer_list_error",
-				"Failed to retrieve peer list",
-				requestID,
-			)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
 			return
 		}
 
-		// Convert to response format
-		peerInfos := make([]peermanager.PeerInfo, len(peers))
-		for i, peer := range peers {
-			peerInfos[i] = peermanager.PeerInfo{
-				ID:          peer.ID,
-				NodeID:      peer.NodeID,
-				PublicKey:   peer.PublicKey,
-				AllocatedIP: peer.AllocatedIP,
-				Status:      string(peer.Status),
-				CreatedAt:   peer.CreatedAt,
-				// LastHandshakeAt is not available in current peer config
+		// Apply client-side filtering (simplified for now)
+		filteredPeers := peers
+		if nodeID, exists := params["node_id"]; exists {
+			nodeIDStr := nodeID.(string)
+			var filtered []*api.PeerInfo
+			for _, peer := range peers {
+				if peer.NodeID == nodeIDStr {
+					filtered = append(filtered, peer)
+				}
 			}
+			filteredPeers = filtered
+		}
+
+		// Apply pagination
+		offset := 0
+		limit := len(filteredPeers)
+
+		if offsetParam, exists := params["offset"]; exists {
+			offset = offsetParam.(int)
+		}
+		if limitParam, exists := params["limit"]; exists {
+			limit = limitParam.(int)
+		}
+
+		// Calculate pagination bounds
+		start := offset
+		if start > len(filteredPeers) {
+			start = len(filteredPeers)
+		}
+
+		end := start + limit
+		if end > len(filteredPeers) {
+			end = len(filteredPeers)
+		}
+
+		paginatedPeers := filteredPeers[start:end]
+
+		// Convert to response format
+		peerInfos := make([]api.PeerInfo, len(paginatedPeers))
+		for i, peer := range paginatedPeers {
+			peerInfos[i] = *peer
 		}
 
 		// Build response with pagination info
-		response := peermanager.PeersListResponse{
+		response := api.PeersListResponse{
 			Peers:      peerInfos,
-			TotalCount: len(peerInfos), // This is the filtered count, not total in DB
-			Offset:     0,
-			Limit:      len(peerInfos),
-		}
-
-		if filters.Offset != nil {
-			response.Offset = *filters.Offset
-		}
-		if filters.Limit != nil {
-			response.Limit = *filters.Limit
+			TotalCount: len(filteredPeers),
+			Offset:     offset,
+			Limit:      limit,
 		}
 
 		s.logger.InfoContext(ctx, "listed peers successfully", "count", len(peerInfos))
@@ -246,33 +212,260 @@ func (s *Server) getPeerHandler() http.HandlerFunc {
 			return
 		}
 
-		// Get peer information
-		peer, err := s.peerManager.GetPeer(ctx, peerID)
+		// Get peer status from VPN service
+		peerStatus, err := s.vpnService.GetPeerStatus(ctx, peerID)
 		if err != nil {
-			s.logger.ErrorContext(ctx, "failed to get peer", "error", err, "peer_id", peerID)
-			_ = WriteErrorWithRequestID(w, http.StatusNotFound,
-				"peer_not_found",
-				"Peer not found",
-				requestID,
-			)
+			s.logger.ErrorContext(ctx, "failed to get peer status", "error", err, "peer_id", peerID)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
 			return
 		}
 
-		// Convert to response format
-		peerInfo := peermanager.PeerInfo{
-			ID:          peer.ID,
-			NodeID:      peer.NodeID,
-			PublicKey:   peer.PublicKey,
-			AllocatedIP: peer.AllocatedIP,
-			Status:      string(peer.Status),
-			CreatedAt:   peer.CreatedAt,
-			// LastHandshakeAt is not available in current peer config
-		}
+		s.logger.InfoContext(ctx, "retrieved peer status successfully", "peer_id", peerID)
 
-		s.logger.InfoContext(ctx, "retrieved peer successfully", "peer_id", peerID)
-
-		if err := WriteSuccess(w, peerInfo); err != nil {
-			s.logger.ErrorContext(ctx, "failed to encode peer response", "error", err)
+		if err := WriteSuccess(w, peerStatus); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode peer status response", "error", err)
 		}
 	}
+}
+
+// Admin handlers
+
+// systemStatusHandler handles system status requests
+func (s *Server) systemStatusHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		status, err := s.adminService.GetSystemStatus(ctx)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to get system status", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
+			return
+		}
+
+		s.logger.InfoContext(ctx, "retrieved system status successfully")
+
+		if err := WriteSuccess(w, status); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode system status response", "error", err)
+		}
+	}
+}
+
+// nodeStatsHandler handles node statistics requests
+func (s *Server) nodeStatsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		stats, err := s.adminService.GetNodeStatistics(ctx)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to get node statistics", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
+			return
+		}
+
+		s.logger.InfoContext(ctx, "retrieved node statistics successfully")
+
+		if err := WriteSuccess(w, stats); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode node statistics response", "error", err)
+		}
+	}
+}
+
+// peerStatsHandler handles peer statistics requests
+func (s *Server) peerStatsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		stats, err := s.adminService.GetPeerStatistics(ctx)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to get peer statistics", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
+			return
+		}
+
+		s.logger.InfoContext(ctx, "retrieved peer statistics successfully")
+
+		if err := WriteSuccess(w, stats); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode peer statistics response", "error", err)
+		}
+	}
+}
+
+// forceRotationHandler handles forced node rotation requests
+func (s *Server) forceRotationHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		err := s.adminService.ForceNodeRotation(ctx)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to force node rotation", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
+			return
+		}
+
+		response := map[string]string{
+			"message": "Node rotation initiated successfully",
+		}
+
+		s.logger.InfoContext(ctx, "forced node rotation initiated successfully")
+
+		if err := WriteSuccess(w, response); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode force rotation response", "error", err)
+		}
+	}
+}
+
+// rotationStatusHandler handles rotation status requests
+func (s *Server) rotationStatusHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		status, err := s.adminService.GetRotationStatus(ctx)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to get rotation status", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
+			return
+		}
+
+		s.logger.InfoContext(ctx, "retrieved rotation status successfully")
+
+		if err := WriteSuccess(w, status); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode rotation status response", "error", err)
+		}
+	}
+}
+
+// manualCleanupHandler handles manual cleanup requests
+func (s *Server) manualCleanupHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		// Parse cleanup options from request body
+		var options application.CleanupOptions
+		if err := ParseJSONRequest(r, &options); err != nil {
+			s.logger.ErrorContext(ctx, "failed to parse cleanup options", "error", err)
+			_ = WriteValidationError(w, err, requestID)
+			return
+		}
+
+		result, err := s.adminService.ManualCleanup(ctx, options)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to perform manual cleanup", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
+			return
+		}
+
+		s.logger.InfoContext(ctx, "manual cleanup completed successfully")
+
+		if err := WriteSuccess(w, result); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode cleanup result response", "error", err)
+		}
+	}
+}
+
+// systemHealthHandler handles system health validation requests
+func (s *Server) systemHealthHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		healthReport, err := s.adminService.ValidateSystemHealth(ctx)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "failed to validate system health", "error", err)
+			statusCode, errorCode, message := translateDomainError(err)
+			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
+			return
+		}
+
+		s.logger.InfoContext(ctx, "system health validation completed successfully")
+
+		if err := WriteSuccess(w, healthReport); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode health report response", "error", err)
+		}
+	}
+}
+
+// translateDomainError translates domain errors to appropriate HTTP status codes and error messages
+func translateDomainError(err error) (statusCode int, errorCode string, message string) {
+	// Default to internal server error
+	statusCode = http.StatusInternalServerError
+	errorCode = "internal_error"
+	message = "An internal server error occurred"
+
+	if err == nil {
+		return
+	}
+
+	errStr := err.Error()
+
+	// Check for specific domain error patterns
+	switch {
+	case contains(errStr, "not found") || contains(errStr, "peer not found") || contains(errStr, "node not found"):
+		statusCode = http.StatusNotFound
+		errorCode = "resource_not_found"
+		message = "The requested resource was not found"
+
+	case contains(errStr, "invalid") || contains(errStr, "validation"):
+		statusCode = http.StatusBadRequest
+		errorCode = "validation_error"
+		message = "Invalid request parameters"
+
+	case contains(errStr, "capacity") || contains(errStr, "full") || contains(errStr, "exhausted"):
+		statusCode = http.StatusServiceUnavailable
+		errorCode = "capacity_exceeded"
+		message = "System capacity exceeded, please try again later"
+
+	case contains(errStr, "timeout") || contains(errStr, "connection"):
+		statusCode = http.StatusServiceUnavailable
+		errorCode = "service_unavailable"
+		message = "Service temporarily unavailable"
+
+	case contains(errStr, "conflict") || contains(errStr, "already exists"):
+		statusCode = http.StatusConflict
+		errorCode = "resource_conflict"
+		message = "Resource conflict detected"
+
+	case contains(errStr, "unauthorized") || contains(errStr, "permission"):
+		statusCode = http.StatusForbidden
+		errorCode = "access_denied"
+		message = "Access denied"
+
+	case contains(errStr, "rate limit") || contains(errStr, "too many"):
+		statusCode = http.StatusTooManyRequests
+		errorCode = "rate_limit_exceeded"
+		message = "Rate limit exceeded"
+	}
+
+	return statusCode, errorCode, message
+}
+
+// contains checks if a string contains a substring (case-insensitive)
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr ||
+		(len(s) > len(substr) &&
+			(s[:len(substr)] == substr ||
+				s[len(s)-len(substr):] == substr ||
+				containsSubstring(s, substr))))
+}
+
+// containsSubstring performs a simple substring search
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

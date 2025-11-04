@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/spf13/viper"
 )
@@ -89,49 +88,27 @@ func (l *Loader) setDefaults() {
 	l.v.SetDefault("hetzner.server_types", []string{"cx11"})
 	l.v.SetDefault("hetzner.image", "ubuntu-22.04")
 	l.v.SetDefault("hetzner.locations", []string{"nbg1"})
-}
 
-// Validate validates the configuration
-func (c *Config) Validate() error {
-	// Validate required Hetzner settings
-	if c.Hetzner.APIToken == "" {
-		return fmt.Errorf("hetzner.api_token is required (set VPN_ROTATOR_HETZNER_API_TOKEN env var)")
-	}
+	// Node service defaults
+	l.v.SetDefault("node_service.max_peers_per_node", 50)
+	l.v.SetDefault("node_service.capacity_threshold", 80.0)
+	l.v.SetDefault("node_service.health_check_timeout", "30s")
+	l.v.SetDefault("node_service.provisioning_timeout", "10m")
+	l.v.SetDefault("node_service.destruction_timeout", "5m")
+	l.v.SetDefault("node_service.optimal_node_selection", "least_loaded")
 
-	if c.Hetzner.SSHPrivateKeyPath == "" {
-		return fmt.Errorf("hetzner.ssh_private_key_path is required")
-	}
+	// Node interactor defaults
+	l.v.SetDefault("node_interactor.ssh_timeout", "30s")
+	l.v.SetDefault("node_interactor.command_timeout", "60s")
+	l.v.SetDefault("node_interactor.wireguard_config_path", "/etc/wireguard/wg0.conf")
+	l.v.SetDefault("node_interactor.wireguard_interface", "wg0")
+	l.v.SetDefault("node_interactor.retry_attempts", 3)
+	l.v.SetDefault("node_interactor.retry_backoff", "2s")
 
-	// Validate log level
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	if !validLevels[c.Log.Level] {
-		return fmt.Errorf("invalid log.level: %s (must be debug, info, warn, or error)", c.Log.Level)
-	}
-
-	// Validate log format
-	if c.Log.Format != "json" && c.Log.Format != "text" {
-		return fmt.Errorf("invalid log.format: %s (must be json or text)", c.Log.Format)
-	}
-
-	// Validate service configuration
-	if c.Service.ShutdownTimeout < time.Second {
-		return fmt.Errorf("service.shutdown_timeout must be at least 1 second")
-	}
-
-	// Validate intervals
-	if c.Scheduler.RotationInterval < time.Hour {
-		return fmt.Errorf("scheduler.rotation_interval must be at least 1 hour")
-	}
-
-	if c.Scheduler.CleanupInterval < time.Minute {
-		return fmt.Errorf("scheduler.cleanup_interval must be at least 1 minute")
-	}
-
-	if c.Scheduler.CleanupAge < time.Hour {
-		return fmt.Errorf("scheduler.cleanup_age must be at least 1 hour")
-	}
-
-	return nil
+	// Circuit breaker defaults
+	l.v.SetDefault("circuit_breaker.failure_threshold", 5)
+	l.v.SetDefault("circuit_breaker.reset_timeout", "60s")
+	l.v.SetDefault("circuit_breaker.max_attempts", 3)
 }
 
 // LoadWithPath loads configuration from a specific file path
