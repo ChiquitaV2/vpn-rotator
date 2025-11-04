@@ -8,10 +8,10 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/cloudprovisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -35,7 +35,7 @@ func NewServiceFactory(cfg *config.Config, logger *slog.Logger) *ServiceFactory 
 type ServiceComponents struct {
 	// Infrastructure layer
 	Store            db.Store
-	CloudProvisioner cloudprovisioner.CloudProvisioner
+	CloudProvisioner provisioner.CloudProvisioner
 	NodeInteractor   nodeinteractor.NodeInteractor
 
 	// Domain services
@@ -154,14 +154,14 @@ func (f *ServiceFactory) createCloudProvisioner(components *ServiceComponents) e
 	f.logger.Debug("initializing cloud provisioner")
 
 	// Create Hetzner provisioner
-	hetznerConfig := &cloudprovisioner.HetznerConfig{
+	hetznerConfig := &provisioner.HetznerConfig{
 		ServerType:   f.getDefaultServerType(),
 		Image:        f.config.Hetzner.Image,
 		Location:     f.getDefaultLocation(),
 		SSHPublicKey: f.config.Hetzner.SSHKey,
 	}
 
-	provisioner, err := cloudprovisioner.NewHetznerProvisioner(f.config.Hetzner.APIToken, hetznerConfig, f.logger)
+	provisioner, err := provisioner.NewHetznerProvisioner(f.config.Hetzner.APIToken, hetznerConfig, f.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create Hetzner provisioner: %w", err)
 	}

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
 )
 

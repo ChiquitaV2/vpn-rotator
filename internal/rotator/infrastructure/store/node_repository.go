@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 )
 

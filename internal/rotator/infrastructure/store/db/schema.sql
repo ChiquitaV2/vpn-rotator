@@ -3,8 +3,8 @@
 CREATE TABLE nodes
 (
     -- Identity
-    id        TEXT PRIMARY KEY NOT NULL,                   -- node id
-    server_id TEXT,                                        -- server provider id
+    id                TEXT PRIMARY KEY NOT NULL,           -- node id
+    server_id         TEXT,                                -- server provider id
     -- Connection details (FR-14)
     ip_address        TEXT             NOT NULL,
     server_public_key TEXT             NOT NULL UNIQUE,    -- Must be unique

@@ -51,7 +51,7 @@ sqlc-generate:
 	@echo "Generating database code..."
 	sqlc generate -f db/sqlc.yaml
 	@echo "Copying schema for internal db schema embed..."
-	cp -r db/schema.sql internal/rotator/db/schema.sql
+	cp -r db/schema.sql internal/rotator/infrastructure/store/db
 
 ## docker-build: Build Docker images
 docker-build:

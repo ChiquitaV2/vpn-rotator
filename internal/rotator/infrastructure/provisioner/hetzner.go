@@ -1,4 +1,4 @@
-package cloudprovisioner
+package provisioner
 
 import (
 	"bytes"

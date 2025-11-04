@@ -95,7 +95,9 @@ func (q *Queries) CleanupAllNodes(ctx context.Context) error {
 }
 
 const countActivePeersByNode = `-- name: CountActivePeersByNode :one
-SELECT COUNT(*) as count FROM peers WHERE node_id = ? AND status = 'active'
+SELECT COUNT(*) as count
+FROM peers
+WHERE node_id = ? AND status = 'active'
 `
 
 // Count active peers for a specific node
@@ -107,7 +109,9 @@ func (q *Queries) CountActivePeersByNode(ctx context.Context, nodeID string) (in
 }
 
 const countPeersByNode = `-- name: CountPeersByNode :one
-SELECT COUNT(*) as count FROM peers WHERE node_id = ?
+SELECT COUNT(*) as count
+FROM peers
+WHERE node_id = ?
 `
 
 // Count peers for a specific node
@@ -171,16 +175,13 @@ func (q *Queries) CreateNode(ctx context.Context, arg CreateNodeParams) (Node, e
 }
 
 const createNodeSubnet = `-- name: CreateNodeSubnet :one
-INSERT INTO node_subnets (
-    node_id,
-    subnet_cidr,
-    gateway_ip,
-    ip_range_start,
-    ip_range_end,
-    created_at
-)
-VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-RETURNING node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at
+INSERT INTO node_subnets (node_id,
+                          subnet_cidr,
+                          gateway_ip,
+                          ip_range_start,
+                          ip_range_end,
+                          created_at)
+VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at
 `
 
 type CreateNodeSubnetParams struct {
@@ -214,17 +215,14 @@ func (q *Queries) CreateNodeSubnet(ctx context.Context, arg CreateNodeSubnetPara
 
 const createPeer = `-- name: CreatePeer :one
 
-INSERT INTO peers (
-    id,
-    node_id,
-    public_key,
-    allocated_ip,
-    preshared_key,
-    status,
-    created_at
-)
-VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-RETURNING id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+INSERT INTO peers (id,
+                   node_id,
+                   public_key,
+                   allocated_ip,
+                   preshared_key,
+                   status,
+                   created_at)
+VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
 `
 
 type CreatePeerParams struct {
@@ -275,7 +273,9 @@ func (q *Queries) DeleteNode(ctx context.Context, id string) error {
 }
 
 const deleteNodeSubnet = `-- name: DeleteNodeSubnet :exec
-DELETE FROM node_subnets WHERE node_id = ?
+DELETE
+FROM node_subnets
+WHERE node_id = ?
 `
 
 // Delete a node subnet
@@ -285,7 +285,9 @@ func (q *Queries) DeleteNodeSubnet(ctx context.Context, nodeID string) error {
 }
 
 const deletePeer = `-- name: DeletePeer :exec
-DELETE FROM peers WHERE id = ?
+DELETE
+FROM peers
+WHERE id = ?
 `
 
 // Delete a peer
@@ -295,7 +297,9 @@ func (q *Queries) DeletePeer(ctx context.Context, id string) error {
 }
 
 const deletePeersByNode = `-- name: DeletePeersByNode :exec
-DELETE FROM peers WHERE node_id = ?
+DELETE
+FROM peers
+WHERE node_id = ?
 `
 
 // Delete all peers for a specific node
@@ -334,7 +338,9 @@ func (q *Queries) GetActiveNode(ctx context.Context) (Node, error) {
 }
 
 const getAllNodeSubnets = `-- name: GetAllNodeSubnets :many
-SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at FROM node_subnets ORDER BY created_at DESC
+SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at
+FROM node_subnets
+ORDER BY created_at DESC
 `
 
 // Get all node subnets
@@ -411,7 +417,8 @@ func (q *Queries) GetAllNodes(ctx context.Context) ([]Node, error) {
 }
 
 const getAllPeers = `-- name: GetAllPeers :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+FROM peers
 ORDER BY created_at DESC
 `
 
@@ -450,7 +457,10 @@ func (q *Queries) GetAllPeers(ctx context.Context) ([]Peer, error) {
 }
 
 const getAllocatedIPsByNode = `-- name: GetAllocatedIPsByNode :many
-SELECT allocated_ip FROM peers WHERE node_id = ? ORDER BY allocated_ip
+SELECT allocated_ip
+FROM peers
+WHERE node_id = ?
+ORDER BY allocated_ip
 `
 
 // Get all allocated IPs for a specific node
@@ -540,12 +550,13 @@ func (q *Queries) GetIdleNodes(ctx context.Context, dollar_1 sql.NullString) ([]
 }
 
 const getInactivePeers = `-- name: GetInactivePeers :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+FROM peers
 WHERE status = 'active'
   AND (
     last_handshake_at IS NULL
-    OR datetime(last_handshake_at, '+' || ? || ' minutes') <= CURRENT_TIMESTAMP
-  )
+        OR datetime(last_handshake_at, '+' || ? || ' minutes') <= CURRENT_TIMESTAMP
+    )
 ORDER BY last_handshake_at ASC
 `
 
@@ -640,7 +651,9 @@ func (q *Queries) GetNode(ctx context.Context, id string) (Node, error) {
 }
 
 const getNodeByIP = `-- name: GetNodeByIP :one
-SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients FROM nodes WHERE ip_address = ? LIMIT 1
+SELECT id, server_id, ip_address, server_public_key, port, status, version, created_at, updated_at, destroy_at, last_handshake_at, connected_clients
+FROM nodes
+WHERE ip_address = ? LIMIT 1
 `
 
 // Get a specific node by IP address
@@ -725,7 +738,9 @@ func (q *Queries) GetNodeForUpdate(ctx context.Context, id string) (Node, error)
 
 const getNodeSubnet = `-- name: GetNodeSubnet :one
 
-SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at FROM node_subnets WHERE node_id = ? LIMIT 1
+SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at
+FROM node_subnets
+WHERE node_id = ? LIMIT 1
 `
 
 // ----------------------------------------------------------------------------
@@ -747,7 +762,9 @@ func (q *Queries) GetNodeSubnet(ctx context.Context, nodeID string) (NodeSubnet,
 }
 
 const getNodeSubnetBySubnetCIDR = `-- name: GetNodeSubnetBySubnetCIDR :one
-SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at FROM node_subnets WHERE subnet_cidr = ? LIMIT 1
+SELECT node_id, subnet_cidr, gateway_ip, ip_range_start, ip_range_end, created_at
+FROM node_subnets
+WHERE subnet_cidr = ? LIMIT 1
 `
 
 // Get node subnet by CIDR
@@ -993,7 +1010,9 @@ func (q *Queries) GetOrphanedNodes(ctx context.Context) ([]Node, error) {
 const getPeer = `-- name: GetPeer :one
 
 
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers WHERE id = ? LIMIT 1
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+FROM peers
+WHERE id = ? LIMIT 1
 `
 
 // ============================================================================
@@ -1021,7 +1040,9 @@ func (q *Queries) GetPeer(ctx context.Context, id string) (Peer, error) {
 }
 
 const getPeerByPublicKey = `-- name: GetPeerByPublicKey :one
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers WHERE public_key = ? LIMIT 1
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+FROM peers
+WHERE public_key = ? LIMIT 1
 `
 
 // Get a peer by public key
@@ -1043,11 +1064,10 @@ func (q *Queries) GetPeerByPublicKey(ctx context.Context, publicKey string) (Pee
 }
 
 const getPeerStatistics = `-- name: GetPeerStatistics :one
-SELECT
-    COUNT(*) as total_peers,
-    SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_peers,
-    SUM(CASE WHEN status = 'disconnected' THEN 1 ELSE 0 END) as disconnected_peers,
-    SUM(CASE WHEN status = 'removing' THEN 1 ELSE 0 END) as removing_peers
+SELECT COUNT(*)                                                 as total_peers,
+       SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END)       as active_peers,
+       SUM(CASE WHEN status = 'disconnected' THEN 1 ELSE 0 END) as disconnected_peers,
+       SUM(CASE WHEN status = 'removing' THEN 1 ELSE 0 END)     as removing_peers
 FROM peers
 `
 
@@ -1072,8 +1092,9 @@ func (q *Queries) GetPeerStatistics(ctx context.Context) (GetPeerStatisticsRow, 
 }
 
 const getPeersByNode = `-- name: GetPeersByNode :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
-WHERE node_id = ? 
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+FROM peers
+WHERE node_id = ?
 ORDER BY created_at DESC
 `
 
@@ -1112,8 +1133,9 @@ func (q *Queries) GetPeersByNode(ctx context.Context, nodeID string) ([]Peer, er
 }
 
 const getPeersByStatus = `-- name: GetPeersByStatus :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
-WHERE status = ? 
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+FROM peers
+WHERE status = ?
 ORDER BY created_at DESC
 `
 
@@ -1153,8 +1175,10 @@ func (q *Queries) GetPeersByStatus(ctx context.Context, status string) ([]Peer, 
 
 const getPeersForMigration = `-- name: GetPeersForMigration :many
 
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at FROM peers 
-WHERE node_id = ? AND status = 'active'
+SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+FROM peers
+WHERE node_id = ?
+  AND status = 'active'
 ORDER BY created_at ASC
 `
 
@@ -1210,7 +1234,9 @@ func (q *Queries) GetTotalConnectedClients(ctx context.Context) (interface{}, er
 }
 
 const getUsedSubnetCIDRs = `-- name: GetUsedSubnetCIDRs :many
-SELECT subnet_cidr FROM node_subnets ORDER BY subnet_cidr
+SELECT subnet_cidr
+FROM node_subnets
+ORDER BY subnet_cidr
 `
 
 // Get all used subnet CIDRs
@@ -1311,12 +1337,13 @@ func (q *Queries) UpdateNodeActivity(ctx context.Context, arg UpdateNodeActivity
 
 const updateNodeDetails = `-- name: UpdateNodeDetails :exec
 UPDATE nodes
-SET
-    server_id = ?,
-    ip_address = ?,
+SET server_id         = ?,
+    ip_address        = ?,
     server_public_key = ?,
-    version = version + 1
-WHERE id = ? AND status = 'provisioning' AND version = ?
+    version           = version + 1
+WHERE id = ?
+  AND status = 'provisioning'
+  AND version = ?
 `
 
 type UpdateNodeDetailsParams struct {
@@ -1379,7 +1406,8 @@ func (q *Queries) UpdatePeerLastHandshake(ctx context.Context, arg UpdatePeerLas
 
 const updatePeerNode = `-- name: UpdatePeerNode :exec
 UPDATE peers
-SET node_id = ?, allocated_ip = ?
+SET node_id      = ?,
+    allocated_ip = ?
 WHERE id = ?
 `
 

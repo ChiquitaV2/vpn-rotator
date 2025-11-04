@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"testing"
