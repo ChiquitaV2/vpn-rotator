@@ -297,6 +297,7 @@ func (ps *ProvisioningService) updateNodeDetails(ctx context.Context, node *Node
 
 	// Save to repository
 	if err := ps.repository.Update(ctx, node); err != nil {
+		slog.Debug("failed to update node details", slog.String("node_id", node.ID), slog.String("error", err.Error()))
 		return err
 	}
 

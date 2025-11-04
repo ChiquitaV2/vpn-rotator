@@ -4,6 +4,7 @@
 
 -- name: GetNode :one
 -- Get a specific node by ID
+-- Returns NULL if not found
 SELECT * FROM nodes WHERE id = ? LIMIT 1;
 
 -- name: GetNodeByIP :one
@@ -90,16 +91,14 @@ SET
 WHERE id = ?;
 
 -- name: UpdateNodeDetails :exec
--- Update node IP address and public key while keeping provisioning status
+-- Update node IP address and public key
 UPDATE nodes
 SET server_id         = ?,
     ip_address        = ?,
     server_public_key = ?,
+    status = ?,
     version           = version + 1
-WHERE id = ?
-  AND status = 'provisioning'
-  AND version = ?;
-
+WHERE id = ?;
 -- name: MarkNodeActive :exec
 -- Transition node from provisioning to active (FR-6)
 UPDATE nodes

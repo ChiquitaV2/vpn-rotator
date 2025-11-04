@@ -630,6 +630,7 @@ SELECT id, server_id, ip_address, server_public_key, port, status, version, crea
 // Node Retrieval
 // ----------------------------------------------------------------------------
 // Get a specific node by ID
+// Returns NULL if not found
 func (q *Queries) GetNode(ctx context.Context, id string) (Node, error) {
 	row := q.db.QueryRowContext(ctx, getNode, id)
 	var i Node
@@ -1340,28 +1341,27 @@ UPDATE nodes
 SET server_id         = ?,
     ip_address        = ?,
     server_public_key = ?,
+    status              = ?,
     version           = version + 1
 WHERE id = ?
-  AND status = 'provisioning'
-  AND version = ?
 `
 
 type UpdateNodeDetailsParams struct {
 	ServerID        sql.NullString `json:"server_id"`
 	IpAddress       string         `json:"ip_address"`
 	ServerPublicKey string         `json:"server_public_key"`
+	Status          string         `json:"status"`
 	ID              string         `json:"id"`
-	Version         int64          `json:"version"`
 }
 
-// Update node IP address and public key while keeping provisioning status
+// Update node IP address and public key
 func (q *Queries) UpdateNodeDetails(ctx context.Context, arg UpdateNodeDetailsParams) error {
 	_, err := q.db.ExecContext(ctx, updateNodeDetails,
 		arg.ServerID,
 		arg.IpAddress,
 		arg.ServerPublicKey,
+		arg.Status,
 		arg.ID,
-		arg.Version,
 	)
 	return err
 }

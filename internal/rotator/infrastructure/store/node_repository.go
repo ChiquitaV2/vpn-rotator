@@ -60,10 +60,12 @@ func (r *nodeRepository) GetByID(ctx context.Context, nodeID string) (*node.Node
 // Update updates an existing node
 func (r *nodeRepository) Update(ctx context.Context, n *node.Node) error {
 	// Update status with optimistic locking
-	err := r.store.UpdateNodeStatus(ctx, db.UpdateNodeStatusParams{
-		Status:  string(n.Status),
-		ID:      n.ID,
-		Version: n.Version - 1, // Version was already incremented in domain
+	err := r.store.UpdateNodeDetails(ctx, db.UpdateNodeDetailsParams{
+		ServerID:        sql.NullString{String: n.ServerID, Valid: n.ServerID != ""},
+		IpAddress:       n.IPAddress,
+		ServerPublicKey: n.ServerPublicKey,
+		Status:          string(n.Status),
+		ID:              n.ID,
 	})
 	if err != nil {
 		if err == sql.ErrNoRows {

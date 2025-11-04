@@ -16,14 +16,15 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
 )
 
-// SchedulerInterface defines the interface for scheduler operations
-type SchedulerInterface interface {
+// SchedulerManager defines the interface for scheduler operations
+type SchedulerManager interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
+	IsRunning() bool
 }
 
-// APIServerInterface defines the interface for API server operations
-type APIServerInterface interface {
+// APIServer defines the interface for API server operations
+type APIServer interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 }
@@ -32,8 +33,8 @@ type APIServerInterface interface {
 type Service struct {
 	config     *config.Config
 	components *ServiceComponents
-	scheduler  SchedulerInterface
-	apiServer  APIServerInterface
+	scheduler  SchedulerManager
+	apiServer  APIServer
 	logger     *slog.Logger
 
 	// Internal state for lifecycle management
@@ -102,8 +103,8 @@ func (s *Service) initializeComponents() error {
 func (s *Service) initializeScheduler() error {
 	s.logger.Debug("initializing scheduler with application services")
 
-	// Create scheduler that uses VPN service for rotation and cleanup
-	schedulerManager := scheduler.NewManagerWithServices(
+	// Create unified scheduler that uses VPN service for rotation and cleanup
+	schedulerManager := scheduler.NewUnifiedManager(
 		s.config.Scheduler.RotationInterval,
 		s.config.Scheduler.CleanupInterval,
 		s.config.Scheduler.CleanupAge,
@@ -155,6 +156,7 @@ func (s *Service) Start(ctx context.Context) error {
 	// Start components in dependency order
 	// 1. manager is a dependency for scheduler, so it should be ready first
 	s.logger.Info("orchestrator ready (no startup required)")
+	go s.components.ProvisioningService.ProvisionNode(ctx)
 
 	// 2. Start scheduler (depends on orchestrator)
 	if err := s.scheduler.Start(s.ctx); err != nil {

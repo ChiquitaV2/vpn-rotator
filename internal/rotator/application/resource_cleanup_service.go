@@ -298,21 +298,6 @@ func (s *ResourceCleanupService) cleanupOrphanedNodes(ctx context.Context, dryRu
 func (s *ResourceCleanupService) cleanupUnusedSubnets(ctx context.Context, dryRun bool) (int, error) {
 	s.logger.Info("cleaning up unused subnets", slog.Bool("dry_run", dryRun))
 
-	// Get all active nodes to determine which subnets should exist
-	activeStatus := node.StatusActive
-	activeNodes, err := s.nodeService.ListNodes(ctx, node.Filters{
-		Status: &activeStatus,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("failed to list active nodes: %w", err)
-	}
-
-	// Create map of active node IDs
-	activeNodeIDs := make(map[string]bool)
-	for _, activeNode := range activeNodes {
-		activeNodeIDs[activeNode.ID] = true
-	}
-
 	// Get all nodes (including inactive ones) that might have subnets
 	allNodes, err := s.nodeService.ListNodes(ctx, node.Filters{})
 	if err != nil {
@@ -321,8 +306,8 @@ func (s *ResourceCleanupService) cleanupUnusedSubnets(ctx context.Context, dryRu
 
 	var unusedSubnets []string
 	for _, nodeInfo := range allNodes {
-		// Skip active nodes
-		if activeNodeIDs[nodeInfo.ID] {
+		// Skip active or provisioning nodes
+		if nodeInfo.IsActive() || nodeInfo.Status == node.StatusProvisioning {
 			continue
 		}
 

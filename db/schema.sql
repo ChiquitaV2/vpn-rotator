@@ -11,7 +11,7 @@ CREATE TABLE nodes
     port              INTEGER          NOT NULL DEFAULT 51820,
 
     -- State management (FR-14)
-    status            TEXT             NOT NULL CHECK (status IN ('provisioning', 'active', 'destroying')),
+    status TEXT NOT NULL CHECK (status IN ('provisioning', 'active', 'destroying', 'unhealthy')),
     version           INTEGER          NOT NULL DEFAULT 1, -- Optimistic locking (FR-16)
 
     -- Timestamps (FR-14, FR-18)

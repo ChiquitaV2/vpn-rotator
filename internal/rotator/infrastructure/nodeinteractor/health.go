@@ -63,10 +63,12 @@ func (s *SSHNodeInteractor) executeHealthCheck(ctx context.Context, nodeHost str
 
 	result, err := s.executeCommandOnce(checkCtx, nodeHost, healthCmd.Command)
 	if err != nil {
+		s.sshPool.CloseConnection(nodeHost)
 		return NewHealthCheckError(nodeHost, healthCmd.Name, healthCmd.Command, healthCmd.Timeout, healthCmd.Critical, err)
 	}
 
 	if result.ExitCode != healthCmd.ExpectedExit {
+		s.sshPool.CloseConnection(nodeHost)
 		return NewHealthCheckError(nodeHost, healthCmd.Name, healthCmd.Command, healthCmd.Timeout, healthCmd.Critical,
 			fmt.Errorf("unexpected exit code %d, expected %d", result.ExitCode, healthCmd.ExpectedExit))
 	}

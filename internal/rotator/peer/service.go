@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
 // Service defines the business logic interface for peer operations
@@ -13,6 +15,7 @@ type Service interface {
 	// Core operations
 	Create(ctx context.Context, req *CreateRequest) (*Peer, error)
 	Get(ctx context.Context, peerID string) (*Peer, error)
+	GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error)
 	List(ctx context.Context, filters *Filters) ([]*Peer, error)
 	Remove(ctx context.Context, peerID string) error
 
@@ -97,6 +100,20 @@ func (s *service) Get(ctx context.Context, peerID string) (*Peer, error) {
 	peer, err := s.repo.Get(ctx, peerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get peer: %w", err)
+	}
+
+	return peer, nil
+}
+
+// GetByPublicKey retrieves a peer by its public key
+func (s *service) GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error) {
+	if crypto.IsValidWireGuardKey(publicKey) {
+		return nil, NewValidationError("public_key", "must be valid", publicKey)
+	}
+
+	peer, err := s.repo.GetByPublicKey(ctx, publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get peer by public key: %w", err)
 	}
 
 	return peer, nil

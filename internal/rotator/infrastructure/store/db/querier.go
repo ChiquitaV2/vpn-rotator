@@ -77,6 +77,7 @@ type Querier interface {
 	// Node Retrieval
 	// ----------------------------------------------------------------------------
 	// Get a specific node by ID
+	// Returns NULL if not found
 	GetNode(ctx context.Context, id string) (Node, error)
 	// Get a specific node by IP address
 	GetNodeByIP(ctx context.Context, ipAddress string) (Node, error)
@@ -143,7 +144,7 @@ type Querier interface {
 	ScheduleNodeDestruction(ctx context.Context, arg ScheduleNodeDestructionParams) error
 	// Update last handshake time and client count (FR-10, FR-11)
 	UpdateNodeActivity(ctx context.Context, arg UpdateNodeActivityParams) error
-	// Update node IP address and public key while keeping provisioning status
+	// Update node IP address and public key
 	UpdateNodeDetails(ctx context.Context, arg UpdateNodeDetailsParams) error
 	// Update node status with optimistic locking (FR-16)
 	// Returns error if version doesn't match (concurrent modification)

@@ -53,6 +53,30 @@ func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.Connect
 		return nil, fmt.Errorf("invalid connect request: %w", err)
 	}
 
+	p, err := s.peerService.GetByPublicKey(ctx, publicKey)
+	if err == nil && p != nil {
+		//return existing peer info
+		s.logger.Info("peer with given public key already exists",
+			slog.String("peer_id", p.ID),
+			slog.String("public_key", publicKey))
+		n, err := s.nodeService.GetNode(ctx, p.NodeID)
+		if err != nil {
+			s.logger.Warn("failed to get node",
+				slog.String("node_id", p.NodeID),
+				slog.String("error", err.Error()))
+		}
+
+		response := &api.ConnectResponse{
+			PeerID:          p.ID,
+			ServerPublicKey: n.ServerPublicKey, // Omitting for brevity
+			ServerIP:        n.IPAddress,       // Omitting for brevity
+			ServerPort:      n.Port,            // Omitting for brevity
+			ClientIP:        p.AllocatedIP,
+			DNS:             []string{"1.1.1.1", "8.8.8.8"},
+			AllowedIPs:      []string{"0.0.0.0/0"},
+		}
+		return response, nil
+	}
 	// Select or create optimal node for the peer
 	selectedNode, err := s.selectOrCreateNode(ctx)
 	if err != nil {
