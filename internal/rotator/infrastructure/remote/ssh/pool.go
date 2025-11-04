@@ -138,6 +138,10 @@ func (p *Pool) ExecuteCommand(ctx context.Context, nodeIP, command string) (stri
 			slog.String("command", command),
 			slog.Int("attempt", attempt+1),
 			slog.String("error", err.Error()))
+		p.logger.Debug("result from failed SSH command",
+			slog.String("node_ip", nodeIP),
+			slog.String("command", command),
+			slog.String("result", result))
 
 		// Check if error is retryable
 		if !p.isRetryableSSHError(err) {

@@ -122,13 +122,14 @@ func (s *Service) initializeAPIServer() error {
 	s.logger.Debug("initializing API server with application services")
 
 	// Create API server that uses application services
-	apiServer := api.NewServerWithApplicationServices(
+	apiServer := api.NewServerWithAsyncProvisioning(
 		api.ServerConfig{
 			Address:     s.config.API.ListenAddr,
 			CORSOrigins: []string{"*"}, // TODO: Make configurable
 		},
 		s.components.VPNService,
 		s.components.AdminService,
+		s.components.ProvisioningOrchestrator,
 		s.logger,
 	)
 
@@ -154,17 +155,22 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	// Start components in dependency order
-	// 1. manager is a dependency for scheduler, so it should be ready first
-	s.logger.Info("orchestrator ready (no startup required)")
-	go s.components.ProvisioningService.ProvisionNode(ctx)
+	// 1. Start provisioning orchestrator worker if available
+	if s.components.ProvisioningOrchestrator != nil {
+		s.components.ProvisioningOrchestrator.StartWorker(s.ctx)
+		s.logger.Info("provisioning orchestrator worker started")
+	}
 
-	// 2. Start scheduler (depends on orchestrator)
+	// 2. manager is a dependency for scheduler, so it should be ready first
+	s.logger.Info("orchestrator ready (no startup required)")
+
+	// 3. Start scheduler (depends on orchestrator)
 	if err := s.scheduler.Start(s.ctx); err != nil {
 		return fmt.Errorf("failed to start scheduler: %w", err)
 	}
 	s.logger.Info("scheduler started successfully")
 
-	// 3. Start API server (depends on orchestrator)
+	// 4. Start API server (depends on orchestrator)
 	if err := s.apiServer.Start(s.ctx); err != nil {
 		// If API server fails, stop scheduler before returning error
 		if stopErr := s.scheduler.Stop(s.ctx); stopErr != nil {
@@ -294,7 +300,18 @@ func (s *Service) Stop(ctx context.Context) error {
 		}
 	}
 
-	// 4. Close database store
+	// 4. Close event bus
+	if s.components != nil && s.components.EventBus != nil {
+		s.logger.Info("closing event bus")
+		if err := s.components.EventBus.Close(); err != nil {
+			s.logger.Error("failed to close event bus", "error", err)
+			lastErr = err
+		} else {
+			s.logger.Info("event bus closed successfully")
+		}
+	}
+
+	// 5. Close database store
 	if s.components != nil && s.components.Store != nil {
 		s.logger.Info("closing database store")
 		if err := s.components.Store.Close(); err != nil {
@@ -305,11 +322,11 @@ func (s *Service) Stop(ctx context.Context) error {
 		}
 	}
 
-	// 5. Cancel service context to signal any remaining goroutines
+	// 6. Cancel service context to signal any remaining goroutines
 	s.cancel()
 	s.logger.Info("service context cancelled")
 
-	// 6. Wait for all background goroutines to finish
+	// 7. Wait for all background goroutines to finish
 	s.logger.Debug("waiting for background goroutines to finish")
 	done := make(chan struct{})
 	go func() {

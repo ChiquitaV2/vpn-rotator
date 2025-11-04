@@ -12,7 +12,7 @@ import (
 )
 
 // GetWireGuardStatus retrieves WireGuard interface status and configuration
-func (s *SSHNodeInteractor) GetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error) {
+func (s *SSHNodeInteractor) uninstrumentedGetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error) {
 	s.logger.Debug("getting WireGuard status", slog.String("host", nodeHost))
 
 	// Get WireGuard interface information
@@ -50,7 +50,7 @@ func (s *SSHNodeInteractor) GetWireGuardStatus(ctx context.Context, nodeHost str
 }
 
 // AddPeer adds a WireGuard peer with proper validation and rollback on failure
-func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedAddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
 	s.logger.Debug("adding peer to WireGuard",
 		slog.String("host", nodeHost),
 		slog.String("public_key", config.PublicKey[:8]+"..."),
@@ -61,8 +61,7 @@ func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config
 		return NewWireGuardConfigError(nodeHost, s.config.WireGuardInterface, "peer_config", "", err)
 	}
 
-	// Check if peer already exists
-	existingPeers, err := s.ListPeers(ctx, nodeHost)
+	existingPeers, err := s.uninstrumentedListPeers(ctx, nodeHost)
 	if err != nil {
 		s.logger.Warn("failed to check existing peers", slog.String("host", nodeHost), slog.String("error", err.Error()))
 	} else {
@@ -94,7 +93,7 @@ func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config
 		return NewWireGuardOperationError(nodeHost, "add_peer", s.config.WireGuardInterface, config.PublicKey,
 			fmt.Errorf("command failed with exit code %d: %s", result.ExitCode, result.Stderr))
 	}
-
+	s.logger.Warn("peer add command executed successfully", slog.String("dump", result.Stderr))
 	// Validate that peer was added successfully
 	if err := s.validatePeerAddition(ctx, nodeHost, config.PublicKey); err != nil {
 		// Attempt rollback
@@ -102,7 +101,7 @@ func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config
 			slog.String("host", nodeHost),
 			slog.String("public_key", config.PublicKey[:8]+"..."))
 
-		if rollbackErr := s.RemovePeer(ctx, nodeHost, config.PublicKey); rollbackErr != nil {
+		if rollbackErr := s.uninstrumentedRemovePeer(ctx, nodeHost, config.PublicKey); rollbackErr != nil {
 			s.logger.Error("rollback failed", slog.String("host", nodeHost), slog.String("error", rollbackErr.Error()))
 		}
 
@@ -110,9 +109,8 @@ func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config
 	}
 
 	// Save configuration to persist across reboots
-	if err := s.SaveWireGuardConfig(ctx, nodeHost); err != nil {
-		s.logger.Warn("failed to save WireGuard config after peer addition",
-			slog.String("host", nodeHost),
+	if err := s.uninstrumentedSaveWireGuardConfig(ctx, nodeHost); err != nil {
+		s.logger.Warn("failed to save WireGuard config after peer addition", slog.String("host", nodeHost),
 			slog.String("public_key", config.PublicKey[:8]+"..."),
 			slog.String("error", err.Error()))
 	}
@@ -126,7 +124,7 @@ func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config
 }
 
 // RemovePeer removes a WireGuard peer with existence checking and validation
-func (s *SSHNodeInteractor) RemovePeer(ctx context.Context, nodeHost string, publicKey string) error {
+func (s *SSHNodeInteractor) uninstrumentedRemovePeer(ctx context.Context, nodeHost string, publicKey string) error {
 	s.logger.Debug("removing peer from WireGuard",
 		slog.String("host", nodeHost),
 		slog.String("public_key", publicKey[:8]+"..."))
@@ -137,7 +135,7 @@ func (s *SSHNodeInteractor) RemovePeer(ctx context.Context, nodeHost string, pub
 	}
 
 	// Check if peer exists before attempting removal
-	existingPeers, err := s.ListPeers(ctx, nodeHost)
+	existingPeers, err := s.uninstrumentedListPeers(ctx, nodeHost)
 	if err != nil {
 		s.logger.Warn("failed to check existing peers before removal", slog.String("host", nodeHost), slog.String("error", err.Error()))
 	} else {
@@ -179,7 +177,7 @@ func (s *SSHNodeInteractor) RemovePeer(ctx context.Context, nodeHost string, pub
 	}
 
 	// Save configuration to persist across reboots
-	if err := s.SaveWireGuardConfig(ctx, nodeHost); err != nil {
+	if err := s.uninstrumentedSaveWireGuardConfig(ctx, nodeHost); err != nil {
 		s.logger.Warn("failed to save WireGuard config after peer removal",
 			slog.String("host", nodeHost),
 			slog.String("public_key", publicKey[:8]+"..."),
@@ -194,7 +192,7 @@ func (s *SSHNodeInteractor) RemovePeer(ctx context.Context, nodeHost string, pub
 }
 
 // UpdatePeer updates a peer's configuration by removing and re-adding it
-func (s *SSHNodeInteractor) UpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedUpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
 	s.logger.Debug("updating peer configuration",
 		slog.String("host", nodeHost),
 		slog.String("public_key", config.PublicKey[:8]+"..."))
@@ -205,7 +203,7 @@ func (s *SSHNodeInteractor) UpdatePeer(ctx context.Context, nodeHost string, con
 	}
 
 	// Remove existing peer first
-	if err := s.RemovePeer(ctx, nodeHost, config.PublicKey); err != nil {
+	if err := s.uninstrumentedRemovePeer(ctx, nodeHost, config.PublicKey); err != nil {
 		s.logger.Warn("failed to remove existing peer during update",
 			slog.String("host", nodeHost),
 			slog.String("public_key", config.PublicKey[:8]+"..."),
@@ -213,7 +211,7 @@ func (s *SSHNodeInteractor) UpdatePeer(ctx context.Context, nodeHost string, con
 	}
 
 	// Add peer with new configuration
-	if err := s.AddPeer(ctx, nodeHost, config); err != nil {
+	if err := s.uninstrumentedAddPeer(ctx, nodeHost, config); err != nil {
 		return err
 	}
 
@@ -225,7 +223,7 @@ func (s *SSHNodeInteractor) UpdatePeer(ctx context.Context, nodeHost string, con
 }
 
 // ListPeers lists all peers with WireGuard dump parsing
-func (s *SSHNodeInteractor) ListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error) {
+func (s *SSHNodeInteractor) uninstrumentedListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error) {
 	s.logger.Debug("listing WireGuard peers", slog.String("host", nodeHost))
 
 	// Get WireGuard dump output
@@ -248,13 +246,13 @@ func (s *SSHNodeInteractor) ListPeers(ctx context.Context, nodeHost string) ([]*
 }
 
 // SyncPeers synchronizes peers to match desired configuration state
-func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, configs []PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedSyncPeers(ctx context.Context, nodeHost string, configs []PeerWireGuardConfig) error {
 	s.logger.Debug("synchronizing WireGuard peers",
 		slog.String("host", nodeHost),
 		slog.Int("desired_peer_count", len(configs)))
 
 	// Get current peers
-	currentPeers, err := s.ListPeers(ctx, nodeHost)
+	currentPeers, err := s.uninstrumentedListPeers(ctx, nodeHost)
 	if err != nil {
 		return NewWireGuardOperationError(nodeHost, "sync_peers_list", s.config.WireGuardInterface, "", err)
 	}
@@ -277,7 +275,7 @@ func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, conf
 				slog.String("host", nodeHost),
 				slog.String("public_key", publicKey[:8]+"..."))
 
-			if err := s.RemovePeer(ctx, nodeHost, publicKey); err != nil {
+			if err := s.uninstrumentedRemovePeer(ctx, nodeHost, publicKey); err != nil {
 				s.logger.Error("failed to remove peer during sync",
 					slog.String("host", nodeHost),
 					slog.String("public_key", publicKey[:8]+"..."),
@@ -295,7 +293,7 @@ func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, conf
 					slog.String("host", nodeHost),
 					slog.String("public_key", config.PublicKey[:8]+"..."))
 
-				if err := s.UpdatePeer(ctx, nodeHost, config); err != nil {
+				if err := s.uninstrumentedUpdatePeer(ctx, nodeHost, config); err != nil {
 					s.logger.Error("failed to update peer during sync",
 						slog.String("host", nodeHost),
 						slog.String("public_key", config.PublicKey[:8]+"..."),
@@ -308,7 +306,7 @@ func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, conf
 				slog.String("host", nodeHost),
 				slog.String("public_key", config.PublicKey[:8]+"..."))
 
-			if err := s.AddPeer(ctx, nodeHost, config); err != nil {
+			if err := s.uninstrumentedAddPeer(ctx, nodeHost, config); err != nil {
 				s.logger.Error("failed to add peer during sync",
 					slog.String("host", nodeHost),
 					slog.String("public_key", config.PublicKey[:8]+"..."),
@@ -326,7 +324,7 @@ func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, conf
 }
 
 // UpdateWireGuardConfig updates the complete WireGuard interface configuration
-func (s *SSHNodeInteractor) UpdateWireGuardConfig(ctx context.Context, nodeHost string, config WireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedUpdateWireGuardConfig(ctx context.Context, nodeHost string, config WireGuardConfig) error {
 	s.logger.Debug("updating WireGuard configuration",
 		slog.String("host", nodeHost),
 		slog.String("interface", config.InterfaceName))
@@ -343,7 +341,7 @@ func (s *SSHNodeInteractor) UpdateWireGuardConfig(ctx context.Context, nodeHost 
 }
 
 // RestartWireGuard restarts the WireGuard service
-func (s *SSHNodeInteractor) RestartWireGuard(ctx context.Context, nodeHost string) error {
+func (s *SSHNodeInteractor) uninstrumentedRestartWireGuard(ctx context.Context, nodeHost string) error {
 	s.logger.Debug("restarting WireGuard service", slog.String("host", nodeHost))
 
 	// Try wg-quick restart first
@@ -369,7 +367,7 @@ func (s *SSHNodeInteractor) RestartWireGuard(ctx context.Context, nodeHost strin
 
 	// Validate that WireGuard is running after restart
 	time.Sleep(2 * time.Second) // Give it a moment to start
-	if _, err := s.GetWireGuardStatus(ctx, nodeHost); err != nil {
+	if _, err := s.uninstrumentedGetWireGuardStatus(ctx, nodeHost); err != nil {
 		return NewWireGuardOperationError(nodeHost, "restart_validate", s.config.WireGuardInterface, "", err)
 	}
 
@@ -378,7 +376,7 @@ func (s *SSHNodeInteractor) RestartWireGuard(ctx context.Context, nodeHost strin
 }
 
 // SaveWireGuardConfig saves the current WireGuard configuration to persist across reboots
-func (s *SSHNodeInteractor) SaveWireGuardConfig(ctx context.Context, nodeHost string) error {
+func (s *SSHNodeInteractor) uninstrumentedSaveWireGuardConfig(ctx context.Context, nodeHost string) error {
 	s.logger.Debug("saving WireGuard configuration", slog.String("host", nodeHost))
 
 	// Try wg-quick save first
@@ -486,7 +484,7 @@ func (s *SSHNodeInteractor) validatePeerConfig(config PeerWireGuardConfig) error
 
 // validatePeerAddition validates that a peer was successfully added
 func (s *SSHNodeInteractor) validatePeerAddition(ctx context.Context, nodeHost, publicKey string) error {
-	peers, err := s.ListPeers(ctx, nodeHost)
+	peers, err := s.uninstrumentedListPeers(ctx, nodeHost)
 	if err != nil {
 		return fmt.Errorf("failed to list peers for validation: %w", err)
 	}
@@ -502,7 +500,7 @@ func (s *SSHNodeInteractor) validatePeerAddition(ctx context.Context, nodeHost, 
 
 // validatePeerRemoval validates that a peer was successfully removed
 func (s *SSHNodeInteractor) validatePeerRemoval(ctx context.Context, nodeHost, publicKey string) error {
-	peers, err := s.ListPeers(ctx, nodeHost)
+	peers, err := s.uninstrumentedListPeers(ctx, nodeHost)
 	if err != nil {
 		return fmt.Errorf("failed to list peers for validation: %w", err)
 	}
@@ -587,50 +585,75 @@ func (s *SSHNodeInteractor) parseWireGuardPeers(output string) ([]*WireGuardPeer
 			continue
 		}
 
-		// WireGuard dump format: interface_private_key interface_public_key listen_port fwmark
-		// peer_public_key preshared_key endpoint allowed_ips latest_handshake transfer_rx transfer_tx persistent_keepalive
 		parts := strings.Fields(line)
-
-		// Skip interface line (first line) - it has 4 parts
+		// Skip interface line which typically has 4 parts
 		if len(parts) == 4 {
 			continue
 		}
+		// Need at least a public key and allowed IPs to consider this a peer line
+		if len(parts) < 3 {
+			continue
+		}
 
-		// Peer line should have 9 parts
-		if len(parts) >= 9 {
-			peer := &WireGuardPeerStatus{
-				PublicKey:  parts[0],
-				AllowedIPs: strings.Split(parts[3], ","),
+		peer := &WireGuardPeerStatus{
+			PublicKey: parts[0],
+		}
+
+		// Helper to safely get part by index
+		get := func(i int) (string, bool) {
+			if i < len(parts) {
+				return parts[i], true
 			}
+			return "", false
+		}
 
-			// Parse endpoint
-			if parts[2] != "(none)" {
-				peer.Endpoint = &parts[2]
+		// preshared key is parts[1] (ignored here, but checked for "(none)")
+		if v, ok := get(1); ok && v != "(none)" {
+			// if you have a field to store it in the struct later, set it here
+			_ = v
+		}
+
+		// endpoint is parts[2]
+		if v, ok := get(2); ok && v != "(none)" {
+			ep := v
+			peer.Endpoint = &ep
+		}
+
+		// allowed IPs is typically parts[3] (but if columns shift, try to find a comma or IP-looking token)
+		if v, ok := get(3); ok {
+			peer.AllowedIPs = strings.Split(v, ",")
+		} else {
+			peer.AllowedIPs = []string{}
+		}
+
+		// latest handshake timestamp is usually parts[4]
+		if v, ok := get(4); ok && v != "0" {
+			if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
+				tm := time.Unix(ts, 0)
+				peer.LastHandshake = &tm
 			}
+		}
 
-			// Parse latest handshake
-			if parts[4] != "0" {
-				if timestamp, err := strconv.ParseInt(parts[4], 10, 64); err == nil {
-					handshake := time.Unix(timestamp, 0)
-					peer.LastHandshake = &handshake
-				}
-			}
-
-			// Parse transfer stats
-			if rx, err := strconv.ParseInt(parts[5], 10, 64); err == nil {
+		// transfer rx (parts[5]) and tx (parts[6])
+		if v, ok := get(5); ok {
+			if rx, err := strconv.ParseInt(v, 10, 64); err == nil {
 				peer.TransferRx = rx
 			}
-			if tx, err := strconv.ParseInt(parts[6], 10, 64); err == nil {
+		}
+		if v, ok := get(6); ok {
+			if tx, err := strconv.ParseInt(v, 10, 64); err == nil {
 				peer.TransferTx = tx
 			}
-
-			// Parse persistent keepalive
-			if keepalive, err := strconv.Atoi(parts[7]); err == nil {
-				peer.PersistentKeepalive = keepalive
-			}
-
-			peers = append(peers, peer)
 		}
+
+		// persistent keepalive is commonly at parts[7]; be tolerant of non-numeric trailing tokens
+		if v, ok := get(7); ok {
+			if ka, err := strconv.Atoi(v); err == nil {
+				peer.PersistentKeepalive = ka
+			}
+		}
+
+		peers = append(peers, peer)
 	}
 
 	return peers, nil

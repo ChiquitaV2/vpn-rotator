@@ -7,6 +7,17 @@ import (
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
 )
 
+// ProvisioningRequiredError indicates that async provisioning is required
+type ProvisioningRequiredError struct {
+	Message       string
+	EstimatedWait int
+	RetryAfter    int
+}
+
+func (e *ProvisioningRequiredError) Error() string {
+	return e.Message
+}
+
 // PeerStatus represents the current status of a peer (extended from API models)
 type PeerStatus struct {
 	PeerID       string    `json:"peer_id"`
@@ -29,7 +40,16 @@ type SystemStatus struct {
 	NodeDistribution map[string]int        `json:"node_distribution"` // nodeID -> peer count
 	SystemHealth     string                `json:"system_health"`     // healthy, degraded, unhealthy
 	LastUpdated      time.Time             `json:"last_updated"`
-	NodeStatuses     map[string]NodeStatus `json:"node_statuses"` // nodeID -> status
+	NodeStatuses     map[string]NodeStatus `json:"node_statuses"`          // nodeID -> status
+	Provisioning     *ProvisioningInfo     `json:"provisioning,omitempty"` // current provisioning status
+}
+
+// ProvisioningInfo represents provisioning status information for system status
+type ProvisioningInfo struct {
+	IsActive     bool       `json:"is_active"`
+	Phase        string     `json:"phase,omitempty"`
+	Progress     float64    `json:"progress"`
+	EstimatedETA *time.Time `json:"estimated_eta,omitempty"`
 }
 
 // NodeStatus represents the status of a single node

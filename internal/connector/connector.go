@@ -58,13 +58,20 @@ func NewConnector(cfg *config.Config, log *logger.Logger) *Connector {
 	// Expand home directory in key path
 	cfg.KeyPath = expandPath(cfg.KeyPath)
 
+	apiClient := client.NewClient(cfg.APIURL, log)
+
 	return &Connector{
-		apiClient:  client.NewClient(cfg.APIURL, log),
+		apiClient:  apiClient,
 		configGen:  wireguard.NewConfigGenerator(log),
 		keyManager: wireguard.NewKeyManager(log),
 		logger:     log,
 		config:     cfg,
 	}
+}
+
+// SetProvisioningWaitConfig configures the provisioning wait behavior
+func (c *Connector) SetProvisioningWaitConfig(maxWaits int, statusCheckInterval time.Duration) {
+	c.apiClient.SetProvisioningWaitConfig(maxWaits, statusCheckInterval)
 }
 
 // Connect establishes a VPN connection with automatic key management
@@ -110,6 +117,104 @@ func (c *Connector) Connect(ctx context.Context) error {
 		"server_ip", connectResp.ServerIP,
 		"client_ip", connectResp.ClientIP,
 	)
+
+	return nil
+}
+
+// ConnectWithProvisioningFeedback establishes a VPN connection with user-friendly provisioning feedback
+func (c *Connector) ConnectWithProvisioningFeedback(ctx context.Context) error {
+	c.logger.Info("starting VPN connection process with provisioning feedback")
+
+	// Prepare connection request with intelligent key handling
+	connectReq, err := c.prepareConnectRequest()
+	if err != nil {
+		return fmt.Errorf("failed to prepare connection request: %w", err)
+	}
+
+	fmt.Printf("Connecting to VPN...\n")
+
+	// Connect to the VPN service with enhanced error handling
+	connectResp, err := c.apiClient.ConnectPeer(ctx, connectReq)
+	if err != nil {
+		// Check if this is a provisioning error
+		if provErr, ok := err.(*client.ProvisioningInProgressError); ok {
+			fmt.Printf("\n Node provisioning is in progress\n")
+			fmt.Printf("   Message: %s\n", provErr.Message)
+			fmt.Printf("   Estimated wait: %d seconds\n", provErr.EstimatedWait)
+			fmt.Printf("   The system will automatically retry when ready\n\n")
+
+			// The client has already handled the waiting, so this means it timed out
+			return fmt.Errorf("provisioning took longer than expected: %s", provErr.Message)
+		}
+		return fmt.Errorf("failed to connect peer: %w", err)
+	}
+
+	fmt.Printf("✅ Connection established successfully!\n")
+
+	// Handle server-generated keys if needed
+	if err := c.handleServerKeys(connectResp); err != nil {
+		return fmt.Errorf("failed to handle server keys: %w", err)
+	}
+
+	// Generate and apply WireGuard configuration
+	var configpath string
+	if configpath, err = c.applyWireGuardConfig(connectResp); err != nil {
+		return fmt.Errorf("failed to apply WireGuard config: %w", err)
+	}
+
+	c.logger.Info("vpn configuration applied", "config_path", configpath)
+
+	// Save connection state
+	c.peerID = connectResp.PeerID
+	c.tempConfigPath = configpath
+	c.connected = true
+
+	if err := c.saveConnectionState(); err != nil {
+		c.logger.Warn("failed to save connection state", "error", err)
+	}
+
+	c.logger.Info("VPN connection established",
+		"peer_id", connectResp.PeerID,
+		"server_ip", connectResp.ServerIP,
+		"client_ip", connectResp.ClientIP,
+	)
+
+	return nil
+}
+
+// ConnectWithoutWait attempts to connect without waiting for provisioning
+func (c *Connector) ConnectWithoutWait(ctx context.Context) error {
+	c.logger.Info("attempting VPN connection without provisioning wait")
+
+	// Prepare connection request
+	connectReq, err := c.prepareConnectRequest()
+	if err != nil {
+		return fmt.Errorf("failed to prepare connection request: %w", err)
+	}
+
+	// Try to connect without waiting
+	connectResp, err := c.apiClient.ConnectPeerWithoutWait(ctx, connectReq)
+	if err != nil {
+		return err // Return the error as-is (could be ProvisioningInProgressError)
+	}
+
+	// Handle successful connection
+	if err := c.handleServerKeys(connectResp); err != nil {
+		return fmt.Errorf("failed to handle server keys: %w", err)
+	}
+
+	var configpath string
+	if configpath, err = c.applyWireGuardConfig(connectResp); err != nil {
+		return fmt.Errorf("failed to apply WireGuard config: %w", err)
+	}
+
+	c.peerID = connectResp.PeerID
+	c.tempConfigPath = configpath
+	c.connected = true
+
+	if err := c.saveConnectionState(); err != nil {
+		c.logger.Warn("failed to save connection state", "error", err)
+	}
 
 	return nil
 }

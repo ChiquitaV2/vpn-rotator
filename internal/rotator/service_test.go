@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/db"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/models"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 )
 
 // NewServiceForTesting creates a service with injected mock components for testing

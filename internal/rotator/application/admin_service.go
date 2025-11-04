@@ -39,16 +39,18 @@ type adminService struct {
 	peerService peer.Service
 	ipService   ip.Service
 	vpnService  VPNService // For rotation and cleanup operations
+	provisioner *ProvisioningOrchestrator
 	logger      *slog.Logger
 }
 
-// NewAdminService creates a new admin service instance
-func NewAdminService(nodeService node.NodeService, peerService peer.Service, ipService ip.Service, vpnService VPNService, logger *slog.Logger) AdminService {
+// NewAdminService creates a new admin service instance with async provisioning support
+func NewAdminService(nodeService node.NodeService, peerService peer.Service, ipService ip.Service, vpnService VPNService, provisioner *ProvisioningOrchestrator, logger *slog.Logger) AdminService {
 	return &adminService{
 		nodeService: nodeService,
 		peerService: peerService,
 		ipService:   ipService,
 		vpnService:  vpnService,
+		provisioner: provisioner,
 		logger:      logger,
 	}
 }
@@ -135,6 +137,19 @@ func (s *adminService) GetSystemStatus(ctx context.Context) (*SystemStatus, erro
 		SystemHealth:     systemHealth,
 		LastUpdated:      time.Now(),
 		NodeStatuses:     nodeStatuses,
+	}
+
+	// Add provisioning information if async provisioning service is available
+	if s.provisioner != nil {
+		provisioningStatus := s.provisioner.GetCurrentStatus()
+		if provisioningStatus != nil {
+			status.Provisioning = &ProvisioningInfo{
+				IsActive:     provisioningStatus.IsActive,
+				Phase:        provisioningStatus.Phase,
+				Progress:     provisioningStatus.Progress,
+				EstimatedETA: provisioningStatus.EstimatedETA,
+			}
+		}
 	}
 
 	s.logger.Debug("system status retrieved",

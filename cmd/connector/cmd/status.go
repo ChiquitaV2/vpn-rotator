@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/chiquitav2/vpn-rotator/internal/connector"
+	"github.com/chiquitav2/vpn-rotator/internal/connector/client"
 	"github.com/chiquitav2/vpn-rotator/internal/connector/config"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
@@ -87,13 +90,48 @@ Examples:
 			fmt.Printf("  Name: %s (not active)\n", cfg.Interface)
 		}
 
+		// Check provisioning status
+		fmt.Printf("\nProvisioning Status:\n")
+		apiClient := client.NewClient(cfg.APIURL, log)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if provisioningInfo, err := apiClient.GetProvisioningStatus(ctx); err != nil {
+			fmt.Printf("  Status: UNAVAILABLE (%v)\n", err)
+		} else {
+			if provisioningInfo.IsActive {
+				fmt.Printf("  Status: IN PROGRESS\n")
+				fmt.Printf("  Phase: %s\n", provisioningInfo.Phase)
+				fmt.Printf("  Progress: %.1f%%\n", provisioningInfo.Progress*100)
+				if provisioningInfo.EstimatedETA != nil {
+					remaining := time.Until(*provisioningInfo.EstimatedETA)
+					if remaining > 0 {
+						fmt.Printf("  ETA: %v\n", remaining.Round(time.Second))
+					}
+				}
+			} else {
+				fmt.Printf("  Status: IDLE\n")
+			}
+		}
+
+		// Check overall health
+		if healthResp, err := apiClient.GetHealth(ctx); err != nil {
+			fmt.Printf("\nService Health: UNAVAILABLE (%v)\n", err)
+		} else {
+			fmt.Printf("\nService Health: %s\n", healthResp.Status)
+			if healthResp.Provisioning != nil && healthResp.Provisioning.IsActive {
+				fmt.Printf("  Provisioning active in health check\n")
+			}
+		}
+
 		fmt.Printf("\n")
 
 		// Provide helpful next steps
 		if !conn.IsConnected() {
-			fmt.Printf("To connect: vpn-rotator simple-connect\n")
+			fmt.Printf("To connect: vpn-rotator connect\n")
+			fmt.Printf("To connect without waiting: vpn-rotator connect --no-wait\n")
 		} else {
-			fmt.Printf("To disconnect: vpn-rotator simple-disconnect\n")
+			fmt.Printf("To disconnect: vpn-rotator disconnect\n")
 		}
 	},
 }

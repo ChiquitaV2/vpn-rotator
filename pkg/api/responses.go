@@ -29,8 +29,17 @@ type ConfigResponse struct {
 
 // HealthResponse represents the health check response
 type HealthResponse struct {
-	Status  string `json:"status"`
-	Version string `json:"version,omitempty"`
+	Status       string            `json:"status"`
+	Version      string            `json:"version,omitempty"`
+	Provisioning *ProvisioningInfo `json:"provisioning,omitempty"`
+}
+
+// ProvisioningInfo represents provisioning status information
+type ProvisioningInfo struct {
+	IsActive     bool       `json:"is_active"`
+	Phase        string     `json:"phase,omitempty"`
+	Progress     float64    `json:"progress"`
+	EstimatedETA *time.Time `json:"estimated_eta,omitempty"`
 }
 
 // PeerInfo represents peer information for listing operations

@@ -7,15 +7,16 @@ import (
 
 // Config defines the configuration for the rotator service.
 type Config struct {
-	Service        ServiceConfig        `mapstructure:"service"`
-	Log            LogConfig            `mapstructure:"log"`
-	API            APIConfig            `mapstructure:"api"`
-	DB             DBConfig             `mapstructure:"db"`
-	Scheduler      SchedulerConfig      `mapstructure:"scheduler"`
-	Hetzner        HetznerConfig        `mapstructure:"hetzner"`
-	NodeService    NodeServiceConfig    `mapstructure:"node_service"`
-	NodeInteractor NodeInteractorConfig `mapstructure:"node_interactor"`
-	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
+	Service           ServiceConfig           `mapstructure:"service"`
+	Log               LogConfig               `mapstructure:"log"`
+	API               APIConfig               `mapstructure:"api"`
+	DB                DBConfig                `mapstructure:"db"`
+	Scheduler         SchedulerConfig         `mapstructure:"scheduler"`
+	Hetzner           HetznerConfig           `mapstructure:"hetzner"`
+	NodeService       NodeServiceConfig       `mapstructure:"node_service"`
+	NodeInteractor    NodeInteractorConfig    `mapstructure:"node_interactor"`
+	CircuitBreaker    CircuitBreakerConfig    `mapstructure:"circuit_breaker"`
+	AsyncProvisioning AsyncProvisioningConfig `mapstructure:"async_provisioning"`
 }
 
 // LogConfig defines the logging configuration.
@@ -105,6 +106,16 @@ type CircuitBreakerConfig struct {
 	FailureThreshold int           `mapstructure:"failure_threshold"`
 	ResetTimeout     time.Duration `mapstructure:"reset_timeout"`
 	MaxAttempts      int           `mapstructure:"max_attempts"`
+}
+
+// AsyncProvisioningConfig defines configuration for async provisioning service
+type AsyncProvisioningConfig struct {
+	EventBusMode           string        `mapstructure:"event_bus_mode"`
+	WorkerTimeout          time.Duration `mapstructure:"worker_timeout"`
+	ETAHistoryRetention    int           `mapstructure:"eta_history_retention"`
+	DefaultProvisioningETA time.Duration `mapstructure:"default_provisioning_eta"`
+	ProgressUpdateInterval time.Duration `mapstructure:"progress_update_interval"`
+	MaxConcurrentJobs      int           `mapstructure:"max_concurrent_jobs"`
 }
 
 // Validate validates the configuration for correctness and completeness
@@ -255,5 +266,25 @@ func (c *Config) setDefaults() {
 	}
 	if c.CircuitBreaker.MaxAttempts <= 0 {
 		c.CircuitBreaker.MaxAttempts = 3
+	}
+
+	// Async provisioning defaults
+	if c.AsyncProvisioning.EventBusMode == "" {
+		c.AsyncProvisioning.EventBusMode = "simple"
+	}
+	if c.AsyncProvisioning.WorkerTimeout <= 0 {
+		c.AsyncProvisioning.WorkerTimeout = 15 * time.Minute
+	}
+	if c.AsyncProvisioning.ETAHistoryRetention <= 0 {
+		c.AsyncProvisioning.ETAHistoryRetention = 10
+	}
+	if c.AsyncProvisioning.DefaultProvisioningETA <= 0 {
+		c.AsyncProvisioning.DefaultProvisioningETA = 3 * time.Minute
+	}
+	if c.AsyncProvisioning.ProgressUpdateInterval <= 0 {
+		c.AsyncProvisioning.ProgressUpdateInterval = 5 * time.Second
+	}
+	if c.AsyncProvisioning.MaxConcurrentJobs <= 0 {
+		c.AsyncProvisioning.MaxConcurrentJobs = 1
 	}
 }

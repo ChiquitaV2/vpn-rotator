@@ -38,14 +38,3 @@ func DefaultConfig() *Config {
 		EnableMetrics:       false,
 	}
 }
-
-// OptimizedService creates a service with optimizations based on config
-func OptimizedService(repo Repository, config *Config, metrics Metrics) Service {
-	service := NewService(repo)
-
-	if config.EnableMetrics && metrics != nil {
-		service = NewMetricsService(service, metrics)
-	}
-
-	return service
-}

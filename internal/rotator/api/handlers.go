@@ -16,6 +16,17 @@ func (s *Server) healthHandler() http.HandlerFunc {
 			Version: "1.0.0",
 		}
 
+		// Add provisioning information if provisioning orchestrator is available
+		if s.provisioningOrchestrator != nil {
+			provisioningStatus := s.provisioningOrchestrator.GetCurrentStatus()
+			response.Provisioning = &api.ProvisioningInfo{
+				IsActive:     provisioningStatus.IsActive,
+				Phase:        provisioningStatus.Phase,
+				Progress:     provisioningStatus.Progress,
+				EstimatedETA: provisioningStatus.EstimatedETA,
+			}
+		}
+
 		if err := WriteSuccess(w, response); err != nil {
 			s.logger.ErrorContext(r.Context(), "failed to encode health response", "error", err)
 		}
@@ -53,10 +64,55 @@ func (s *Server) connectHandler() http.HandlerFunc {
 			req.PublicKey = &keyPair.PublicKey
 		}
 
+		// Check if provisioning is active and warn user about potential delays
+		if s.provisioningOrchestrator != nil && s.provisioningOrchestrator.IsProvisioning() {
+			waitTime := s.provisioningOrchestrator.GetEstimatedWaitTime()
+			status := s.provisioningOrchestrator.GetCurrentStatus()
+			s.logger.InfoContext(ctx, "provisioning active during peer connection",
+				"estimated_wait", waitTime,
+				"phase", status.Phase)
+		}
+
 		// Use VPN service to connect peer
 		response, err := s.vpnService.ConnectPeer(ctx, req)
 		if err != nil {
 			s.logger.ErrorContext(ctx, "failed to connect peer", "error", err)
+
+			// Handle provisioning required error specially
+			if provErr, ok := err.(*application.ProvisioningRequiredError); ok {
+				s.logger.InfoContext(ctx, "provisioning required for peer connection",
+					"estimated_wait", provErr.EstimatedWait,
+					"retry_after", provErr.RetryAfter,
+					"message", provErr.Message)
+
+				// Create a detailed provisioning response
+				provisioningResponse := map[string]interface{}{
+					"error":          "provisioning_required",
+					"message":        provErr.Message,
+					"estimated_wait": provErr.EstimatedWait,
+					"retry_after":    provErr.RetryAfter,
+					"request_id":     requestID,
+				}
+
+				// Add current provisioning status if available
+				if s.provisioningOrchestrator != nil {
+					status := s.provisioningOrchestrator.GetCurrentStatus()
+					provisioningResponse["provisioning_status"] = map[string]interface{}{
+						"is_active":     status.IsActive,
+						"phase":         status.Phase,
+						"progress":      status.Progress,
+						"estimated_eta": status.EstimatedETA,
+					}
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				if err := WriteSuccess(w, provisioningResponse); err != nil {
+					s.logger.ErrorContext(ctx, "failed to encode provisioning response", "error", err)
+				}
+				return
+			}
+
 			statusCode, errorCode, message := translateDomainError(err)
 			_ = WriteErrorWithRequestID(w, statusCode, errorCode, message, requestID)
 			return
@@ -397,6 +453,36 @@ func (s *Server) systemHealthHandler() http.HandlerFunc {
 	}
 }
 
+// provisioningStatusHandler handles provisioning status requests
+func (s *Server) provisioningStatusHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestID := GetRequestID(ctx)
+
+		// Check if provisioning orchestrator is available
+		if s.provisioningOrchestrator == nil {
+			s.logger.ErrorContext(ctx, "provisioning orchestrator not available")
+			_ = WriteErrorWithRequestID(w, http.StatusServiceUnavailable,
+				"service_unavailable",
+				"Provisioning orchestrator is not available",
+				requestID)
+			return
+		}
+
+		// Get current provisioning status
+		status := s.provisioningOrchestrator.GetCurrentStatus()
+
+		s.logger.InfoContext(ctx, "retrieved provisioning status successfully",
+			"is_active", status.IsActive,
+			"phase", status.Phase,
+			"progress", status.Progress)
+
+		if err := WriteSuccess(w, status); err != nil {
+			s.logger.ErrorContext(ctx, "failed to encode provisioning status response", "error", err)
+		}
+	}
+}
+
 // translateDomainError translates domain errors to appropriate HTTP status codes and error messages
 func translateDomainError(err error) (statusCode int, errorCode string, message string) {
 	// Default to internal server error
@@ -405,6 +491,14 @@ func translateDomainError(err error) (statusCode int, errorCode string, message 
 	message = "An internal server error occurred"
 
 	if err == nil {
+		return
+	}
+
+	// Check for specific error types first
+	if provErr, ok := err.(*application.ProvisioningRequiredError); ok {
+		statusCode = http.StatusAccepted
+		errorCode = "provisioning_required"
+		message = provErr.Message
 		return
 	}
 

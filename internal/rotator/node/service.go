@@ -13,8 +13,8 @@ import (
 type Service struct {
 	repository       NodeRepository
 	cloudProvisioner CloudProvisioner
-	nodeInteractor   nodeinteractor.NodeInteractor
-	peerManagement   *PeerManagementService
+	healthChecker    nodeinteractor.HealthChecker
+	wireguardManager nodeinteractor.WireGuardManager
 	logger           *slog.Logger
 	config           ServiceConfig
 }
@@ -33,67 +33,19 @@ type ServiceConfig struct {
 func NewService(
 	repository NodeRepository,
 	cloudProvisioner CloudProvisioner,
-	nodeInteractor nodeinteractor.NodeInteractor,
+	healthChecker nodeinteractor.HealthChecker,
+	wireguardManager nodeinteractor.WireGuardManager,
 	logger *slog.Logger,
 	config ServiceConfig,
 ) *Service {
 	return &Service{
 		repository:       repository,
 		cloudProvisioner: cloudProvisioner,
-		nodeInteractor:   nodeInteractor,
+		healthChecker:    healthChecker,
+		wireguardManager: wireguardManager,
 		logger:           logger,
 		config:           config,
 	}
-}
-
-// SetPeerManagementService sets the peer management service (called after creation to avoid circular dependency)
-func (s *Service) SetPeerManagementService(peerManagement *PeerManagementService) {
-	s.peerManagement = peerManagement
-}
-
-// CreateNode creates a new node record directly (DEPRECATED: Use ProvisioningService.ProvisionNode() instead)
-// This method is kept for backward compatibility and special cases where infrastructure
-// is already provisioned externally. For normal node creation, use the coordinated
-// provisioning approach through ProvisioningService.ProvisionNode().
-func (s *Service) CreateNode(ctx context.Context, req CreateRequest) (*Node, error) {
-	s.logger.Warn("using deprecated direct node creation - consider using ProvisioningService.ProvisionNode() for coordinated provisioning")
-
-	// Note: In the new architecture, node creation should go through ProvisioningService.ProvisionNode()
-	// This method creates a node record directly, which is used for cases where
-	// the infrastructure is already provisioned externally
-
-	// Validate request
-	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid create request: %w", err)
-	}
-
-	// Create node entity with validation
-	node, err := NewNode(req.ServerID, req.IPAddress, req.ServerPublicKey, req.Port)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create node entity: %w", err)
-	}
-
-	// Validate for provisioning
-	if err := node.ValidateForProvisioning(); err != nil {
-		return nil, fmt.Errorf("node validation failed: %w", err)
-	}
-
-	// Check for conflicts
-	if err := s.checkNodeConflicts(ctx, node); err != nil {
-		return nil, err
-	}
-
-	// Save to repository
-	if err := s.repository.Create(ctx, node); err != nil {
-		return nil, fmt.Errorf("failed to save node: %w", err)
-	}
-
-	s.logger.Info("successfully created node record",
-		slog.String("node_id", node.ID),
-		slog.String("server_id", node.ServerID),
-		slog.String("status", string(node.Status)))
-
-	return node, nil
 }
 
 // DestroyNode destroys a node with proper cleanup and validation
@@ -120,18 +72,8 @@ func (s *Service) DestroyNode(ctx context.Context, nodeID string) error {
 		return fmt.Errorf("failed to update node status: %w", err)
 	}
 
-	// Check for active peers that need migration
-	peers, err := s.ListNodePeers(ctx, nodeID)
-	if err != nil {
-		s.logger.Warn("failed to check for active peers",
-			slog.String("node_id", nodeID),
-			slog.String("error", err.Error()))
-	} else if len(peers) > 0 {
-		s.logger.Warn("node has active peers during destruction",
-			slog.String("node_id", nodeID),
-			slog.Int("peer_count", len(peers)))
-		// In a full implementation, this would trigger peer migration
-	}
+	// Note: The application layer is responsible for ensuring peers are migrated
+	// before calling DestroyNode. The domain service assumes this precondition is met.
 
 	// Destroy cloud infrastructure if server ID exists
 	if node.ServerID != "" {
@@ -164,7 +106,7 @@ func (s *Service) CheckNodeHealth(ctx context.Context, nodeID string) (*Health, 
 	}
 
 	// Use NodeInteractor for health check
-	healthStatus, err := s.nodeInteractor.CheckNodeHealth(ctx, node.IPAddress)
+	healthStatus, err := s.healthChecker.CheckNodeHealth(ctx, node.IPAddress)
 	if err != nil {
 		return nil, NewHealthCheckError(nodeID, "comprehensive", err)
 	}
@@ -300,41 +242,6 @@ func (s *Service) SelectOptimalNode(ctx context.Context, filters Filters) (*Node
 	}
 }
 
-// AddPeerToNode adds a peer to a node using PeerManagementService if available, otherwise NodeInteractor
-func (s *Service) AddPeerToNode(ctx context.Context, nodeID string, peerConfig PeerConfig) error {
-	s.logger.Debug("adding peer to node",
-		slog.String("node_id", nodeID),
-		slog.String("peer_id", peerConfig.ID))
-
-	return s.peerManagement.AddPeerToNode(ctx, nodeID, peerConfig)
-}
-
-// RemovePeerFromNode removes a peer from a node using PeerManagementService if available, otherwise NodeInteractor
-func (s *Service) RemovePeerFromNode(ctx context.Context, nodeID string, publicKey string) error {
-	s.logger.Debug("removing peer from node",
-		slog.String("node_id", nodeID),
-		slog.String("public_key", publicKey[:8]+"..."))
-
-	return s.peerManagement.RemovePeerFromNode(ctx, nodeID, publicKey)
-
-}
-
-// ListNodePeers lists peers on a node using PeerManagementService if available, otherwise NodeInteractor
-func (s *Service) ListNodePeers(ctx context.Context, nodeID string) ([]*PeerInfo, error) {
-	s.logger.Debug("listing peers on node", slog.String("node_id", nodeID))
-
-	return s.peerManagement.ListNodePeers(ctx, nodeID)
-
-}
-
-// UpdateNodePeerConfig updates a peer's configuration using NodeInteractor
-func (s *Service) UpdateNodePeerConfig(ctx context.Context, nodeID string, peerConfig PeerConfig) error {
-	s.logger.Debug("updating peer config on node",
-		slog.String("node_id", nodeID),
-		slog.String("peer_id", peerConfig.ID))
-	return s.peerManagement.UpdateNodePeerConfig(ctx, nodeID, peerConfig)
-}
-
 // GetNodePublicKey retrieves node's WireGuard public key using NodeInteractor
 func (s *Service) GetNodePublicKey(ctx context.Context, nodeID string) (string, error) {
 	s.logger.Debug("getting node public key", slog.String("node_id", nodeID))
@@ -346,7 +253,7 @@ func (s *Service) GetNodePublicKey(ctx context.Context, nodeID string) (string, 
 	}
 
 	// Get WireGuard status using NodeInteractor
-	wgStatus, err := s.nodeInteractor.GetWireGuardStatus(ctx, node.IPAddress)
+	wgStatus, err := s.wireguardManager.GetWireGuardStatus(ctx, node.IPAddress)
 	if err != nil {
 		return "", fmt.Errorf("failed to get WireGuard status: %w", err)
 	}

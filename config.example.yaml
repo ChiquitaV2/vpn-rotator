@@ -55,6 +55,15 @@ circuit_breaker:
   reset_timeout: 60s                              # Time before attempting reset
   max_attempts: 3                                 # Maximum retry attempts
 
+# Async provisioning configuration
+async_provisioning:
+  event_bus_mode: "simple"                        # Event bus mode: simple, wildcard
+  worker_timeout: 15m                             # Maximum time for provisioning operations
+  eta_history_retention: 10                       # Number of historical records for ETA calculation
+  default_provisioning_eta: 3m                    # Default estimated provisioning time
+  progress_update_interval: 5s                    # How often to update progress
+  max_concurrent_jobs: 1                          # Maximum concurrent provisioning jobs
+
 # Peer service optimization configuration
 peer:
   # Cache settings for performance optimization

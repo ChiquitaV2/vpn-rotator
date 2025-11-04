@@ -107,7 +107,7 @@ func (s *service) Get(ctx context.Context, peerID string) (*Peer, error) {
 
 // GetByPublicKey retrieves a peer by its public key
 func (s *service) GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error) {
-	if crypto.IsValidWireGuardKey(publicKey) {
+	if !crypto.IsValidWireGuardKey(publicKey) {
 		return nil, NewValidationError("public_key", "must be valid", publicKey)
 	}
 

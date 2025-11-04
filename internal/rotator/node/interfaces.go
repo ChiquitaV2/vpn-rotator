@@ -18,12 +18,6 @@ type NodeService interface {
 	ValidateNodeCapacity(ctx context.Context, nodeID string, additionalPeers int) error
 	SelectOptimalNode(ctx context.Context, filters Filters) (*Node, error)
 
-	// Peer management operations on nodes
-	AddPeerToNode(ctx context.Context, nodeID string, peerConfig PeerConfig) error
-	RemovePeerFromNode(ctx context.Context, nodeID string, publicKey string) error
-	ListNodePeers(ctx context.Context, nodeID string) ([]*PeerInfo, error)
-	UpdateNodePeerConfig(ctx context.Context, nodeID string, peerConfig PeerConfig) error
-
 	// Node information operations
 	GetNodePublicKey(ctx context.Context, nodeID string) (string, error)
 	GetNodeStatistics(ctx context.Context) (*Statistics, error)
@@ -67,17 +61,6 @@ type CloudProvisioner interface {
 	ProvisionNode(ctx context.Context, config ProvisioningConfig) (*ProvisionedNode, error)
 	DestroyNode(ctx context.Context, serverID string) error
 	GetNodeStatus(ctx context.Context, serverID string) (*CloudNodeStatus, error)
-}
-
-// NodeInteractor defines the interface for remote node operations (already exists in infrastructure)
-// This is a reference to the existing interface in infrastructure/nodeinteractor
-type NodeInteractor interface {
-	CheckNodeHealth(ctx context.Context, nodeHost string) (*NodeHealthStatus, error)
-	AddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
-	RemovePeer(ctx context.Context, nodeHost string, publicKey string) error
-	ListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error)
-	UpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
-	GetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error)
 }
 
 // PeerConfig represents peer configuration for node operations
@@ -134,46 +117,4 @@ type CloudNodeStatus struct {
 	ServerID  string `json:"server_id"`
 	Status    string `json:"status"`
 	IPAddress string `json:"ip_address"`
-}
-
-// NodeHealthStatus represents health status from NodeInteractor
-type NodeHealthStatus struct {
-	IsHealthy       bool          `json:"is_healthy"`
-	ResponseTime    time.Duration `json:"response_time"`
-	SystemLoad      float64       `json:"system_load"`
-	MemoryUsage     float64       `json:"memory_usage"`
-	DiskUsage       float64       `json:"disk_usage"`
-	WireGuardStatus string        `json:"wireguard_status"`
-	ConnectedPeers  int           `json:"connected_peers"`
-	LastChecked     time.Time     `json:"last_checked"`
-	Errors          []string      `json:"errors,omitempty"`
-}
-
-// WireGuardStatus represents WireGuard interface status
-type WireGuardStatus struct {
-	InterfaceName string    `json:"interface_name"`
-	PublicKey     string    `json:"public_key"`
-	ListenPort    int       `json:"listen_port"`
-	IsRunning     bool      `json:"is_running"`
-	PeerCount     int       `json:"peer_count"`
-	LastUpdated   time.Time `json:"last_updated"`
-}
-
-// WireGuardPeerStatus represents a WireGuard peer's status
-type WireGuardPeerStatus struct {
-	PublicKey           string     `json:"public_key"`
-	Endpoint            *string    `json:"endpoint,omitempty"`
-	AllowedIPs          []string   `json:"allowed_ips"`
-	LastHandshake       *time.Time `json:"last_handshake,omitempty"`
-	TransferRx          int64      `json:"transfer_rx"`
-	TransferTx          int64      `json:"transfer_tx"`
-	PersistentKeepalive int        `json:"persistent_keepalive"`
-}
-
-// PeerWireGuardConfig represents a peer's WireGuard configuration
-type PeerWireGuardConfig struct {
-	PublicKey    string   `json:"public_key"`
-	PresharedKey *string  `json:"preshared_key,omitempty"`
-	AllowedIPs   []string `json:"allowed_ips"`
-	Endpoint     *string  `json:"endpoint,omitempty"`
 }

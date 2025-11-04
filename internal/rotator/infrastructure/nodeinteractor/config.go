@@ -35,7 +35,7 @@ func DefaultConfig() NodeInteractorConfig {
 			},
 			{
 				Name:         "disk_space",
-				Command:      "df -h /",
+				Command:      "df -kP /",
 				Timeout:      5 * time.Second,
 				Critical:     false,
 				ExpectedExit: 0,
@@ -51,7 +51,7 @@ func DefaultConfig() NodeInteractorConfig {
 		SystemMetricsPath: SystemMetricsPaths{
 			LoadAvg:   "/proc/loadavg",
 			MemInfo:   "/proc/meminfo",
-			DiskUsage: "df -h /",
+			DiskUsage: "df -kP /",
 			Uptime:    "/proc/uptime",
 			Hostname:  "/etc/hostname",
 			OSRelease: "/etc/os-release",

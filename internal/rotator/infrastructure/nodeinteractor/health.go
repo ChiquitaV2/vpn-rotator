@@ -10,7 +10,7 @@ import (
 )
 
 // CheckNodeHealth performs comprehensive health checking with system metrics collection
-func (s *SSHNodeInteractor) CheckNodeHealth(ctx context.Context, nodeHost string) (*NodeHealthStatus, error) {
+func (s *SSHNodeInteractor) uninstrumentedCheckNodeHealth(ctx context.Context, nodeHost string) (*NodeHealthStatus, error) {
 	s.logger.Debug("checking node health", slog.String("host", nodeHost))
 
 	start := time.Now()
@@ -202,7 +202,7 @@ func (s *SSHNodeInteractor) checkWireGuardHealth(ctx context.Context, nodeHost s
 }
 
 // GetNodeSystemInfo retrieves detailed system information
-func (s *SSHNodeInteractor) GetNodeSystemInfo(ctx context.Context, nodeHost string) (*NodeSystemInfo, error) {
+func (s *SSHNodeInteractor) uninstrumentedGetNodeSystemInfo(ctx context.Context, nodeHost string) (*NodeSystemInfo, error) {
 	s.logger.Debug("getting node system info", slog.String("host", nodeHost))
 
 	info := &NodeSystemInfo{
@@ -230,7 +230,7 @@ func (s *SSHNodeInteractor) GetNodeSystemInfo(ctx context.Context, nodeHost stri
 	}
 
 	// Get CPU cores
-	if result, err := s.executeCommandOnce(ctx, nodeHost, "nproc"); err == nil {
+	if result, err := s.executeCommandOnce(ctx, nodeHost, "grep -c ^processor /proc/cpuinfo"); err == nil {
 		if cores, err := strconv.Atoi(strings.TrimSpace(result.Stdout)); err == nil {
 			info.CPUCores = cores
 		}

@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/chiquitav2/vpn-rotator/internal/connector"
+	"github.com/chiquitav2/vpn-rotator/internal/connector/client"
 	"github.com/chiquitav2/vpn-rotator/internal/connector/config"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
@@ -92,15 +94,42 @@ Examples:
 			cancel()
 		}()
 
-		// Connect to VPN
+		// Connect to VPN with provisioning wait handling
 		if err := conn.Reconnect(ctx); err != nil {
 			log.Error("reconnection failed", "error", err)
 			fmt.Printf("Reconnection failed: %v\n", err)
 		}
-		if err = conn.Connect(ctx); err != nil {
-			log.Error("connection failed", "error", err)
-			fmt.Printf("Connection failed: %v\n", err)
-			os.Exit(1)
+
+		// Configure provisioning wait behavior based on flags
+		maxWaits, _ := cmd.Flags().GetInt("max-provisioning-waits")
+		statusInterval, _ := cmd.Flags().GetDuration("provisioning-check-interval")
+		noWait, _ := cmd.Flags().GetBool("no-wait")
+
+		conn.SetProvisioningWaitConfig(maxWaits, statusInterval)
+
+		if noWait {
+			// Connect without waiting for provisioning
+			if err = conn.ConnectWithoutWait(ctx); err != nil {
+				// Check if this is a provisioning error
+				if provErr, ok := err.(*client.ProvisioningInProgressError); ok {
+					fmt.Printf("\n🔄 Node provisioning is required\n")
+					fmt.Printf("   Message: %s\n", provErr.Message)
+					fmt.Printf("   Estimated wait: %d seconds\n", provErr.EstimatedWait)
+					fmt.Printf("   Retry after: %d seconds\n", provErr.RetryAfter)
+					fmt.Printf("\nTo wait automatically for provisioning, run without --no-wait flag\n")
+					os.Exit(2) // Different exit code for provisioning needed
+				}
+				log.Error("connection failed", "error", err)
+				fmt.Printf("Connection failed: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			// Connect with automatic provisioning wait
+			if err = conn.ConnectWithProvisioningFeedback(ctx); err != nil {
+				log.Error("connection failed", "error", err)
+				fmt.Printf("Connection failed: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		fmt.Printf("Connected successfully!\n")
@@ -132,4 +161,9 @@ func init() {
 	connectCmd.Flags().String("interface", "", "WireGuard interface name (default: wg0)")
 	connectCmd.Flags().Bool("generate-keys", false, "Use server-generated keys instead of local keys")
 	connectCmd.Flags().String("key-path", "", "Custom path for private key file")
+
+	// Provisioning wait configuration
+	connectCmd.Flags().Int("max-provisioning-waits", 5, "Maximum number of provisioning wait cycles")
+	connectCmd.Flags().Duration("provisioning-check-interval", 15*time.Second, "Interval for checking provisioning status")
+	connectCmd.Flags().Bool("no-wait", false, "Don't wait for provisioning, return immediately if provisioning is needed")
 }

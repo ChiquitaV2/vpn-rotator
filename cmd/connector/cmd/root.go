@@ -16,8 +16,21 @@ var rootCmd = &cobra.Command{
 	Use:   "vpn-rotator",
 	Short: "VPN Rotator Connector - Client application for VPN connection",
 	Long: `VPN Rotator Connector is the client application that connects to VPN nodes
-managed by the VPN Rotator Service. It handles automatic rotation and 
-connection management.`,
+managed by the VPN Rotator Service. It handles automatic rotation, connection 
+management, and intelligent provisioning wait handling.
+
+Key Features:
+  • Automatic node provisioning wait handling
+  • Real-time provisioning status monitoring  
+  • Intelligent retry logic with backoff
+  • Server-side key generation support
+  • Automatic WireGuard configuration management
+
+Common Usage:
+  vpn-rotator connect                    # Connect with automatic provisioning wait
+  vpn-rotator connect --no-wait          # Connect immediately or get provisioning status
+  vpn-rotator provisioning --watch       # Monitor provisioning progress
+  vpn-rotator status                     # Show connection and provisioning status`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },

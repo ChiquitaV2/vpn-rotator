@@ -24,15 +24,27 @@ VPN Rotator is a self-hosted system that automatically rotates WireGuard VPN nod
 
 ## Architecture
 
-The system consists of two main components:
+The system uses a **coordinated provisioning architecture** for reliable node management:
+
+### Core Components
 
 - **Rotator Service**: A long-running service that manages the entire lifecycle of VPN nodes. It includes:
     - An **API server** with standardized JSON responses, middleware for logging/tracing, and health endpoints.
     - A **scheduler** for rotating nodes and cleaning up old ones.
-    - A **provisioner** to interact with the Hetzner Cloud API.
-    - An **orchestrator** to control the state of the nodes and coordinate provisioning/rotation.
+  - A **coordinated provisioning service** that atomically manages node creation with proper resource allocation.
+  - A **VPN orchestrator** to control the state of the nodes and coordinate operations.
     - A **database layer** with migrations, connection pooling, and transaction support.
 - **Connector CLI**: A client-side application that fetches the latest configuration from the rotator service and configures the local WireGuard interface.
+
+### Coordinated Provisioning
+
+The system ensures reliable node provisioning through:
+
+- **Atomic Resource Management**: IP allocation, infrastructure provisioning, and database records are managed
+  atomically
+- **Comprehensive Error Handling**: Automatic rollback on any failure in the provisioning chain
+- **Consistent Configuration**: Centralized provisioning logic ensures consistent node setup
+- **Enhanced Monitoring**: Detailed provisioning metrics and structured logging
 
 For a more detailed overview of the architecture, see [docs/architecture-detailed.md](docs/architecture-detailed.md).
 

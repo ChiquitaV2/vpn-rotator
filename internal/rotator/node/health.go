@@ -14,7 +14,7 @@ import (
 type HealthService struct {
 	nodeService    NodeService
 	repository     NodeRepository
-	nodeInteractor nodeinteractor.NodeInteractor
+	nodeInteractor nodeinteractor.HealthChecker
 	logger         *slog.Logger
 	config         HealthConfig
 
@@ -60,7 +60,7 @@ type HealthAlert struct {
 func NewHealthService(
 	nodeService NodeService,
 	repository NodeRepository,
-	nodeInteractor nodeinteractor.NodeInteractor,
+	nodeInteractor nodeinteractor.HealthChecker,
 	logger *slog.Logger,
 	config HealthConfig,
 ) *HealthService {

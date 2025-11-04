@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -21,6 +22,7 @@ type client struct {
 	config *ssh.ClientConfig
 	host   string
 	conn   *ssh.Client
+	mutex  sync.Mutex
 }
 
 // NewClient creates a new SSH client
@@ -49,31 +51,30 @@ func NewClient(host, user, privateKey string) (Client, error) {
 
 // RunCommand executes a command on the remote host
 func (c *client) RunCommand(ctx context.Context, command string) (string, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	// Establish connection if not already connected
 	if c.conn == nil {
-		conn, err := ssh.Dial("tcp", net.JoinHostPort(c.host, "22"), c.config)
-		if err != nil {
-			return "", fmt.Errorf("failed to connect to %s: %w", c.host, err)
+		if err := c.connect(); err != nil {
+			return "", err
 		}
-		c.conn = conn
 	}
 
 	// Create a session
 	session, err := c.conn.NewSession()
 	if err != nil {
-		// Connection might be stale, try to reconnect
+		// Connection might be stale, try to reconnect once
 		c.conn.Close()
 		c.conn = nil
 
-		conn, err := ssh.Dial("tcp", net.JoinHostPort(c.host, "22"), c.config)
-		if err != nil {
-			return "", fmt.Errorf("failed to reconnect to %s: %w", c.host, err)
+		if err := c.connect(); err != nil {
+			return "", fmt.Errorf("failed to reconnect: %w", err)
 		}
-		c.conn = conn
 
 		session, err = c.conn.NewSession()
 		if err != nil {
-			return "", fmt.Errorf("failed to create session: %w", err)
+			return "", fmt.Errorf("failed to create session after reconnect: %w", err)
 		}
 	}
 	defer session.Close()
@@ -99,8 +100,21 @@ func (c *client) RunCommand(ctx context.Context, command string) (string, error)
 	return string(output), nil
 }
 
+// connect establishes a new SSH connection
+func (c *client) connect() error {
+	conn, err := ssh.Dial("tcp", net.JoinHostPort(c.host, "22"), c.config)
+	if err != nil {
+		return fmt.Errorf("failed to connect to %s: %w", c.host, err)
+	}
+	c.conn = conn
+	return nil
+}
+
 // Close closes the SSH connection
 func (c *client) Close() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if c.conn != nil {
 		err := c.conn.Close()
 		c.conn = nil
@@ -111,6 +125,9 @@ func (c *client) Close() error {
 
 // IsHealthy checks if the SSH connection is healthy
 func (c *client) IsHealthy() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if c.conn == nil {
 		return false
 	}

@@ -1,6 +1,7 @@
 package rotator
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store"
@@ -38,18 +40,21 @@ type ServiceComponents struct {
 	CloudProvisioner provisioner.CloudProvisioner
 	NodeInteractor   nodeinteractor.NodeInteractor
 
+	// Event system
+	EventBus *events.ProvisioningEventBus
+
 	// Domain services
 	NodeService node.NodeService
 	PeerService peer.Service
 	IPService   ip.Service
 
 	// Application services
-	VPNService   application.VPNService
-	AdminService application.AdminService
+	VPNService               application.VPNService
+	AdminService             application.AdminService
+	ProvisioningOrchestrator *application.ProvisioningOrchestrator
 
 	// Domain services (additional)
-	PeerManagementService *node.PeerManagementService
-	ProvisioningService   *node.ProvisioningService
+	ProvisioningService *node.ProvisioningService
 
 	// Repositories
 	NodeRepository   node.NodeRepository
@@ -83,10 +88,12 @@ func (f *ServiceFactory) CreateComponents() (*ServiceComponents, error) {
 		return nil, fmt.Errorf("failed to create domain services: %w", err)
 	}
 
-	// 5. Wire peer management service to node service (after both are created)
-	f.wirePeerManagementService(components)
+	// 5. Initialize event system (depends on domain services)
+	if err := f.createEventSystem(components); err != nil {
+		return nil, fmt.Errorf("failed to create event system: %w", err)
+	}
 
-	// 6. Initialize application services (depend on domain services)
+	// 7. Initialize application services (depend on domain services and event system)
 	if err := f.createApplicationServices(components); err != nil {
 		return nil, fmt.Errorf("failed to create application services: %w", err)
 	}
@@ -218,11 +225,6 @@ func (f *ServiceFactory) createDomainServices(components *ServiceComponents) err
 		return fmt.Errorf("failed to create node service: %w", err)
 	}
 
-	// Initialize peer management service
-	if err := f.createPeerManagementService(components); err != nil {
-		return fmt.Errorf("failed to create peer management service: %w", err)
-	}
-
 	// Initialize provisioning service
 	if err := f.createProvisioningService(components); err != nil {
 		return fmt.Errorf("failed to create provisioning service: %w", err)
@@ -264,10 +266,12 @@ func (f *ServiceFactory) createNodeService(components *ServiceComponents) error 
 
 	nodeServiceConfig := f.createNodeServiceConfig()
 
+	// NodeInteractor implements both HealthChecker and WireGuardManager interfaces
 	nodeService := node.NewService(
 		components.NodeRepository,
 		components.CloudProvisioner,
-		components.NodeInteractor,
+		components.NodeInteractor, // HealthChecker
+		components.NodeInteractor, // WireGuardManager
 		f.logger,
 		nodeServiceConfig,
 	)
@@ -277,34 +281,77 @@ func (f *ServiceFactory) createNodeService(components *ServiceComponents) error 
 	return nil
 }
 
-// wirePeerManagementService wires the peer management service to the node service after both are created
-func (f *ServiceFactory) wirePeerManagementService(components *ServiceComponents) {
-	if components.NodeService != nil && components.PeerManagementService != nil {
-		// Cast to concrete type to access SetPeerManagementService method
-		if nodeService, ok := components.NodeService.(*node.Service); ok {
-			nodeService.SetPeerManagementService(components.PeerManagementService)
-			f.logger.Debug("peer management service wired to node service")
-		}
+// createEventSystem initializes the event system
+func (f *ServiceFactory) createEventSystem(components *ServiceComponents) error {
+	f.logger.Debug("initializing event system")
+
+	// Create event bus with configuration
+	eventBusConfig := f.createEventBusConfig()
+	eventBus := events.NewProvisioningEventBusWithConfig(eventBusConfig, f.logger)
+	components.EventBus = eventBus
+
+	// Wrap NodeInteractor with event publishing capability
+	if components.NodeInteractor != nil {
+		components.NodeInteractor = nodeinteractor.NewEventPublishingNodeInteractor(
+			components.NodeInteractor,
+			eventBus,
+			f.logger,
+		)
+		f.logger.Debug("node interactor wrapped with event publishing")
 	}
+
+	// Create unified provisioning orchestrator (temporary placeholder - will be recreated)
+	orchestratorConfig := application.OrchestratorConfig{
+		WorkerTimeout:          f.config.AsyncProvisioning.WorkerTimeout,
+		ETAHistoryRetention:    f.config.AsyncProvisioning.ETAHistoryRetention,
+		DefaultProvisioningETA: f.config.AsyncProvisioning.DefaultProvisioningETA,
+		MaxConcurrentJobs:      f.config.AsyncProvisioning.MaxConcurrentJobs,
+	}
+
+	// Re-create domain provisioning service with orchestrator as progress reporter
+	// This creates a circular dependency that we resolve by creating orchestrator first with existing service,
+	// then recreating the domain service with orchestrator as reporter
+
+	// Now recreate the domain service with the orchestrator as its progress reporter
+	provisioningConfig := f.createProvisioningServiceConfig()
+	domainServiceWithReporter := node.NewProvisioningService(
+		components.NodeService,
+		components.NodeRepository,
+		components.CloudProvisioner,
+		components.NodeInteractor,
+		components.IPService,
+		f.logger,
+		provisioningConfig,
+	)
+
+	// Finally, create the actual orchestrator with the updated domain service
+	provisioningOrchestrator := application.NewProvisioningOrchestratorWithConfig(
+		domainServiceWithReporter,
+		components.NodeService,
+		eventBus,
+		orchestratorConfig,
+		f.logger,
+	)
+	domainServiceWithReporter.SetProgressReporter(provisioningOrchestrator)
+	components.ProvisioningService = domainServiceWithReporter
+	components.ProvisioningOrchestrator = provisioningOrchestrator
+
+	f.logger.Debug("event system and provisioning orchestrator initialized successfully")
+	return nil
 }
 
 // createApplicationServices initializes application layer services
 func (f *ServiceFactory) createApplicationServices(components *ServiceComponents) error {
 	f.logger.Debug("initializing application services")
 
-	// Initialize node provisioning service
-	nodeProvisioningService := application.NewNodeProvisioningService(
-		components.ProvisioningService,
-		components.NodeService,
-		f.logger,
-	)
-
-	// Initialize VPN orchestrator service (uses smaller focused services)
+	// Initialize VPN orchestrator service with unified provisioning orchestrator
 	vpnService := application.NewVPNOrchestratorService(
 		components.NodeService,
 		components.PeerService,
 		components.IPService,
-		nodeProvisioningService,
+		components.NodeInteractor,
+		components.ProvisioningOrchestrator,
+		components.EventBus,
 		f.logger,
 	)
 	components.VPNService = vpnService
@@ -315,44 +362,13 @@ func (f *ServiceFactory) createApplicationServices(components *ServiceComponents
 		components.PeerService,
 		components.IPService,
 		vpnService,
+		components.ProvisioningOrchestrator,
 		f.logger,
 	)
 	components.AdminService = adminService
 
 	f.logger.Debug("application services initialized successfully")
 	return nil
-}
-
-// createPeerManagementService initializes the peer management service
-func (f *ServiceFactory) createPeerManagementService(components *ServiceComponents) error {
-	f.logger.Debug("initializing peer management service")
-
-	peerManagementConfig := f.createPeerManagementConfig()
-
-	peerManagementService := node.NewPeerManagementService(
-		components.NodeService,
-		components.NodeRepository,
-		components.NodeInteractor,
-		f.logger,
-		peerManagementConfig,
-	)
-
-	components.PeerManagementService = peerManagementService
-	f.logger.Debug("peer management service initialized successfully")
-	return nil
-}
-
-// createPeerManagementConfig creates peer management configuration
-func (f *ServiceFactory) createPeerManagementConfig() node.PeerManagementConfig {
-	return node.PeerManagementConfig{
-		MaxPeersPerNode:       50,
-		ValidateBeforeAdd:     true,
-		ValidateAfterAdd:      true,
-		ValidateAfterRemove:   true,
-		SyncConfigAfterChange: true,
-		AllowDuplicateIPs:     false,
-		RequirePresharedKey:   false,
-	}
 }
 
 // Helper methods for configuration
@@ -394,22 +410,8 @@ func (f *ServiceFactory) createNodeServiceConfig() node.ServiceConfig {
 
 // createNodeInteractorConfig creates node interactor configuration from config
 func (f *ServiceFactory) createNodeInteractorConfig() nodeinteractor.NodeInteractorConfig {
-	// Use config values if available, otherwise use defaults
-	config := nodeinteractor.NodeInteractorConfig{
-		SSHTimeout:          30 * time.Second,
-		CommandTimeout:      60 * time.Second,
-		WireGuardConfigPath: "/etc/wireguard/wg0.conf",
-		WireGuardInterface:  "wg0",
-		RetryAttempts:       3,
-		RetryBackoff:        2 * time.Second,
-		HealthCheckCommands: f.getDefaultHealthCheckCommands(),
-		SystemMetricsPath:   f.getDefaultSystemMetricsPaths(),
-		CircuitBreaker: nodeinteractor.CircuitBreakerConfig{
-			FailureThreshold: 5,
-			ResetTimeout:     60 * time.Second,
-			MaxAttempts:      3,
-		},
-	}
+	// Start with the default config from the nodeinteractor package
+	config := nodeinteractor.DefaultConfig()
 
 	// Override with config values if provided
 	if f.config.NodeInteractor.SSHTimeout > 0 {
@@ -464,52 +466,6 @@ func (f *ServiceFactory) getDefaultLocation() string {
 	return "nbg1"
 }
 
-// getDefaultHealthCheckCommands returns default health check commands
-func (f *ServiceFactory) getDefaultHealthCheckCommands() []nodeinteractor.HealthCommand {
-	return []nodeinteractor.HealthCommand{
-		{
-			Name:         "system_load",
-			Command:      "cat /proc/loadavg",
-			Timeout:      5 * time.Second,
-			Critical:     false,
-			ExpectedExit: 0,
-		},
-		{
-			Name:         "memory_info",
-			Command:      "cat /proc/meminfo",
-			Timeout:      5 * time.Second,
-			Critical:     false,
-			ExpectedExit: 0,
-		},
-		{
-			Name:         "disk_usage",
-			Command:      "df -h /",
-			Timeout:      10 * time.Second,
-			Critical:     false,
-			ExpectedExit: 0,
-		},
-		{
-			Name:         "wireguard_status",
-			Command:      "systemctl is-active wg-quick@wg0",
-			Timeout:      5 * time.Second,
-			Critical:     true,
-			ExpectedExit: 0,
-		},
-	}
-}
-
-// getDefaultSystemMetricsPaths returns default system metrics paths
-func (f *ServiceFactory) getDefaultSystemMetricsPaths() nodeinteractor.SystemMetricsPaths {
-	return nodeinteractor.SystemMetricsPaths{
-		LoadAvg:   "/proc/loadavg",
-		MemInfo:   "/proc/meminfo",
-		DiskUsage: "df -h /",
-		Uptime:    "/proc/uptime",
-		Hostname:  "/etc/hostname",
-		OSRelease: "/etc/os-release",
-	}
-}
-
 // convertHealthCheckCommands converts config health check commands to nodeinteractor format
 func (f *ServiceFactory) convertHealthCheckCommands(configCommands []config.HealthCommand) []nodeinteractor.HealthCommand {
 	commands := make([]nodeinteractor.HealthCommand, len(configCommands))
@@ -526,11 +482,13 @@ func (f *ServiceFactory) convertHealthCheckCommands(configCommands []config.Heal
 }
 
 // createProvisioningService initializes the provisioning service
+// Note: This service will have its progress reporter updated later when the orchestrator is created
 func (f *ServiceFactory) createProvisioningService(components *ServiceComponents) error {
 	f.logger.Debug("initializing provisioning service")
 
 	provisioningConfig := f.createProvisioningServiceConfig()
 
+	// Temporarily use no-op reporter; will be replaced with orchestrator in createEventSystem
 	provisioningService := node.NewProvisioningService(
 		components.NodeService,
 		components.NodeRepository,
@@ -546,10 +504,35 @@ func (f *ServiceFactory) createProvisioningService(components *ServiceComponents
 	return nil
 }
 
+// noOpProgressReporter is a no-op implementation of ProgressReporter
+type noOpProgressReporter struct{}
+
+func (n *noOpProgressReporter) ReportProgress(ctx context.Context, nodeID, phase string, progress float64, message string, metadata map[string]interface{}) error {
+	return nil
+}
+
+func (n *noOpProgressReporter) ReportPhaseStart(ctx context.Context, nodeID, phase, message string) error {
+	return nil
+}
+
+func (n *noOpProgressReporter) ReportPhaseComplete(ctx context.Context, nodeID, phase, message string) error {
+	return nil
+}
+
+func (n *noOpProgressReporter) ReportError(ctx context.Context, nodeID, phase, errorMsg string, retryable bool) error {
+	return nil
+}
+
 // createProvisioningServiceConfig creates provisioning service configuration
 func (f *ServiceFactory) createProvisioningServiceConfig() node.ProvisioningServiceConfig {
+	// Use async provisioning timeout if configured, otherwise use default
+	provisioningTimeout := 10 * time.Minute
+	if f.config.AsyncProvisioning.WorkerTimeout > 0 {
+		provisioningTimeout = f.config.AsyncProvisioning.WorkerTimeout
+	}
+
 	return node.ProvisioningServiceConfig{
-		ProvisioningTimeout:    10 * time.Minute,
+		ProvisioningTimeout:    provisioningTimeout,
 		ReadinessTimeout:       5 * time.Minute,
 		ReadinessCheckInterval: 30 * time.Second,
 		MaxRetryAttempts:       3,
@@ -563,5 +546,23 @@ func (f *ServiceFactory) createProvisioningServiceConfig() node.ProvisioningServ
 			"service": "vpn-rotator",
 			"type":    "vpn-node",
 		},
+	}
+}
+
+// createEventBusConfig creates event bus configuration from config
+func (f *ServiceFactory) createEventBusConfig() events.EventBusConfig {
+	return events.EventBusConfig{
+		Mode:    f.config.AsyncProvisioning.EventBusMode,
+		Timeout: f.config.AsyncProvisioning.WorkerTimeout,
+	}
+}
+
+// createOrchestratorConfig creates provisioning orchestrator configuration from config
+func (f *ServiceFactory) createOrchestratorConfig() application.OrchestratorConfig {
+	return application.OrchestratorConfig{
+		WorkerTimeout:          f.config.AsyncProvisioning.WorkerTimeout,
+		ETAHistoryRetention:    f.config.AsyncProvisioning.ETAHistoryRetention,
+		DefaultProvisioningETA: f.config.AsyncProvisioning.DefaultProvisioningETA,
+		MaxConcurrentJobs:      f.config.AsyncProvisioning.MaxConcurrentJobs,
 	}
 }

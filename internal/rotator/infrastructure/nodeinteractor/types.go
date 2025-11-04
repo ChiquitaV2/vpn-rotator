@@ -1,34 +1,8 @@
 package nodeinteractor
 
 import (
-	"context"
 	"time"
 )
-
-// NodeInteractor provides a unified interface for all SSH server operations and remote node management
-type NodeInteractor interface {
-	// Health checking operations
-	CheckNodeHealth(ctx context.Context, nodeHost string) (*NodeHealthStatus, error)
-	GetNodeSystemInfo(ctx context.Context, nodeHost string) (*NodeSystemInfo, error)
-
-	// WireGuard management operations
-	GetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error)
-	AddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
-	RemovePeer(ctx context.Context, nodeHost string, publicKey string) error
-	UpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
-	ListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error)
-	SyncPeers(ctx context.Context, nodeHost string, configs []PeerWireGuardConfig) error
-
-	// Configuration management
-	UpdateWireGuardConfig(ctx context.Context, nodeHost string, config WireGuardConfig) error
-	RestartWireGuard(ctx context.Context, nodeHost string) error
-	SaveWireGuardConfig(ctx context.Context, nodeHost string) error
-
-	// System operations
-	ExecuteCommand(ctx context.Context, nodeHost string, command string) (*CommandResult, error)
-	UploadFile(ctx context.Context, nodeHost string, localPath, remotePath string) error
-	DownloadFile(ctx context.Context, nodeHost string, remotePath, localPath string) error
-}
 
 // NodeInteractorConfig contains configuration for NodeInteractor operations
 type NodeInteractorConfig struct {
@@ -146,4 +120,11 @@ type CommandResult struct {
 	Stdout   string        `json:"stdout"`
 	Stderr   string        `json:"stderr"`
 	Duration time.Duration `json:"duration"`
+}
+
+// NodeInteractorMetrics contains comprehensive metrics
+type NodeInteractorMetrics struct {
+	Operations      OperationMetrics                   `json:"operations"`
+	Connections     map[string]ConnectionHealthMetrics `json:"connections"`
+	CircuitBreakers map[string]CircuitBreakerStats     `json:"circuit_breakers"`
 }

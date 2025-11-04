@@ -12,12 +12,12 @@ import (
 
 // Server represents the HTTP API server with proper lifecycle management.
 type Server struct {
-	server       *http.Server
-	vpnService   application.VPNService
-	adminService application.AdminService
-	logger       *slog.Logger
-	corsOrigins  []string
-	cbMonitor    CircuitBreakerMonitor
+	server                   *http.Server
+	vpnService               application.VPNService
+	adminService             application.AdminService
+	provisioningOrchestrator *application.ProvisioningOrchestrator
+	logger                   *slog.Logger
+	corsOrigins              []string
 }
 
 // ServerConfig contains configuration for the API server.
@@ -26,18 +26,14 @@ type ServerConfig struct {
 	CORSOrigins []string
 }
 
-// CircuitBreakerMonitor defines the interface for circuit breaker monitoring.
-type CircuitBreakerMonitor interface {
-	Handler() http.HandlerFunc
-}
-
-// NewServer creates a new API server instance.
-func NewServer(config ServerConfig, vpnService application.VPNService, adminService application.AdminService, logger *slog.Logger) *Server {
+// NewServerWithAsyncProvisioning creates a new API server instance with provisioning orchestrator support.
+func NewServerWithAsyncProvisioning(config ServerConfig, vpnService application.VPNService, adminService application.AdminService, provisioningOrchestrator *application.ProvisioningOrchestrator, logger *slog.Logger) *Server {
 	return &Server{
-		vpnService:   vpnService,
-		adminService: adminService,
-		logger:       logger,
-		corsOrigins:  config.CORSOrigins,
+		vpnService:               vpnService,
+		adminService:             adminService,
+		provisioningOrchestrator: provisioningOrchestrator,
+		logger:                   logger,
+		corsOrigins:              config.CORSOrigins,
 		server: &http.Server{
 			Addr:         config.Address,
 			ReadTimeout:  15 * time.Second,
@@ -45,27 +41,6 @@ func NewServer(config ServerConfig, vpnService application.VPNService, adminServ
 			IdleTimeout:  60 * time.Second,
 		},
 	}
-}
-
-// NewServerWithMonitoring creates a new API server instance with circuit breaker monitoring.
-func NewServerWithMonitoring(config ServerConfig, vpnService application.VPNService, adminService application.AdminService, cbMonitor CircuitBreakerMonitor, logger *slog.Logger) *Server {
-	server := &Server{
-		vpnService:   vpnService,
-		adminService: adminService,
-		logger:       logger,
-		corsOrigins:  config.CORSOrigins,
-		server: &http.Server{
-			Addr:         config.Address,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
-			IdleTimeout:  60 * time.Second,
-		},
-	}
-
-	// Store circuit breaker monitor for route registration
-	server.cbMonitor = cbMonitor
-
-	return server
 }
 
 // Start starts the HTTP server and begins serving requests.
@@ -131,10 +106,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc("POST /api/v1/admin/cleanup", s.manualCleanupHandler())
 	mux.HandleFunc("GET /api/v1/admin/health", s.systemHealthHandler())
 
-	// Register circuit breaker monitoring endpoint
-	if s.cbMonitor != nil {
-		mux.HandleFunc("/api/v1/circuit-breakers", s.cbMonitor.Handler())
-	}
+	// Provisioning routes
+	mux.HandleFunc("GET /api/v1/provisioning/status", s.provisioningStatusHandler())
 
 	// Apply middleware chain
 	handler := Chain(
@@ -146,25 +119,4 @@ func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
 	)(mux)
 
 	return handler
-}
-
-// NewServerWithApplicationServices creates a new API server instance using application services
-func NewServerWithApplicationServices(
-	config ServerConfig,
-	vpnService application.VPNService,
-	adminService application.AdminService,
-	logger *slog.Logger,
-) *Server {
-	return &Server{
-		vpnService:   vpnService,
-		adminService: adminService,
-		logger:       logger,
-		corsOrigins:  config.CORSOrigins,
-		server: &http.Server{
-			Addr:         config.Address,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
-			IdleTimeout:  60 * time.Second,
-		},
-	}
 }

@@ -109,6 +109,14 @@ func (l *Loader) setDefaults() {
 	l.v.SetDefault("circuit_breaker.failure_threshold", 5)
 	l.v.SetDefault("circuit_breaker.reset_timeout", "60s")
 	l.v.SetDefault("circuit_breaker.max_attempts", 3)
+
+	// Async provisioning defaults
+	l.v.SetDefault("async_provisioning.event_bus_mode", "simple")
+	l.v.SetDefault("async_provisioning.worker_timeout", "15m")
+	l.v.SetDefault("async_provisioning.eta_history_retention", 10)
+	l.v.SetDefault("async_provisioning.default_provisioning_eta", "3m")
+	l.v.SetDefault("async_provisioning.progress_update_interval", "5s")
+	l.v.SetDefault("async_provisioning.max_concurrent_jobs", 1)
 }
 
 // LoadWithPath loads configuration from a specific file path

@@ -1,7 +1,6 @@
 package nodeinteractor
 
 import (
-	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -12,6 +11,7 @@ type OperationMetrics struct {
 	TotalOperations     int64                           `json:"total_operations"`
 	SuccessfulOps       int64                           `json:"successful_operations"`
 	FailedOps           int64                           `json:"failed_operations"`
+	TotalDuration       time.Duration                   `json:"total_duration"`
 	AverageResponseTime time.Duration                   `json:"average_response_time"`
 	LastOperation       time.Time                       `json:"last_operation"`
 	OperationsByType    map[string]OperationTypeMetrics `json:"operations_by_type"`
@@ -70,6 +70,7 @@ func (mc *MetricsCollector) RecordOperation(operationType string, duration time.
 	// Update overall metrics
 	mc.operationMetrics.TotalOperations++
 	mc.operationMetrics.LastOperation = time.Now()
+	mc.operationMetrics.TotalDuration += duration
 
 	if err == nil {
 		mc.operationMetrics.SuccessfulOps++
@@ -79,15 +80,6 @@ func (mc *MetricsCollector) RecordOperation(operationType string, duration time.
 		// Record error type
 		errorType := getErrorType(err)
 		mc.operationMetrics.ErrorsByType[errorType]++
-	}
-
-	// Update average response time
-	if mc.operationMetrics.TotalOperations == 1 {
-		mc.operationMetrics.AverageResponseTime = duration
-	} else {
-		// Calculate running average
-		totalTime := time.Duration(mc.operationMetrics.TotalOperations-1) * mc.operationMetrics.AverageResponseTime
-		mc.operationMetrics.AverageResponseTime = (totalTime + duration) / time.Duration(mc.operationMetrics.TotalOperations)
 	}
 
 	// Update operation type metrics
@@ -156,6 +148,10 @@ func (mc *MetricsCollector) GetOperationMetrics() OperationMetrics {
 	metrics := *mc.operationMetrics
 	metrics.OperationsByType = make(map[string]OperationTypeMetrics)
 	metrics.ErrorsByType = make(map[string]int64)
+
+	if metrics.TotalOperations > 0 {
+		metrics.AverageResponseTime = metrics.TotalDuration / time.Duration(metrics.TotalOperations)
+	}
 
 	for k, v := range mc.operationMetrics.OperationsByType {
 		metrics.OperationsByType[k] = v
@@ -246,148 +242,4 @@ func getErrorType(err error) string {
 	default:
 		return "unknown"
 	}
-}
-
-// Enhanced SSHNodeInteractor with monitoring integration
-
-// recordOperationMetrics is a helper method to record operation metrics
-func (s *SSHNodeInteractor) recordOperationMetrics(operationType string, start time.Time, err error) {
-	duration := time.Since(start)
-
-	// Log operation with structured fields
-	logFields := []slog.Attr{
-		slog.String("operation", operationType),
-		slog.Duration("duration", duration),
-		slog.Bool("success", err == nil),
-	}
-
-	if err != nil {
-		logFields = append(logFields, slog.String("error", err.Error()))
-		logFields = append(logFields, slog.String("error_type", getErrorType(err)))
-	}
-
-	s.logger.LogAttrs(context.Background(), slog.LevelDebug, "operation completed", logFields...)
-}
-
-// recordConnectionMetrics is a helper method to record connection metrics
-func (s *SSHNodeInteractor) recordConnectionMetrics(host string, start time.Time, err error) {
-	duration := time.Since(start)
-
-	logFields := []slog.Attr{
-		slog.String("host", host),
-		slog.Duration("connection_time", duration),
-		slog.Bool("success", err == nil),
-	}
-
-	if err != nil {
-		logFields = append(logFields, slog.String("error", err.Error()))
-	}
-
-	s.logger.LogAttrs(context.Background(), slog.LevelDebug, "connection attempt", logFields...)
-}
-
-// Enhanced error handling with context
-
-// wrapError wraps an error with additional context
-func (s *SSHNodeInteractor) wrapError(err error, operation, host string, contextData map[string]interface{}) error {
-	if err == nil {
-		return nil
-	}
-
-	// Log error with full context
-	logFields := []slog.Attr{
-		slog.String("operation", operation),
-		slog.String("host", host),
-		slog.String("error", err.Error()),
-		slog.String("error_type", getErrorType(err)),
-	}
-
-	// Add context fields
-	for key, value := range contextData {
-		logFields = append(logFields, slog.Any(key, value))
-	}
-
-	s.logger.LogAttrs(context.Background(), slog.LevelError, "operation failed", logFields...)
-
-	return err
-}
-
-// logOperationStart logs the start of an operation
-func (s *SSHNodeInteractor) logOperationStart(operation, host string, contextData map[string]interface{}) {
-	logFields := []slog.Attr{
-		slog.String("operation", operation),
-		slog.String("host", host),
-	}
-
-	for key, value := range contextData {
-		logFields = append(logFields, slog.Any(key, value))
-	}
-
-	s.logger.LogAttrs(context.Background(), slog.LevelDebug, "operation started", logFields...)
-}
-
-// logOperationSuccess logs successful operation completion
-func (s *SSHNodeInteractor) logOperationSuccess(operation, host string, duration time.Duration, contextData map[string]interface{}) {
-	logFields := []slog.Attr{
-		slog.String("operation", operation),
-		slog.String("host", host),
-		slog.Duration("duration", duration),
-	}
-
-	for key, value := range contextData {
-		logFields = append(logFields, slog.Any(key, value))
-	}
-
-	s.logger.LogAttrs(context.Background(), slog.LevelInfo, "operation completed successfully", logFields...)
-}
-
-// Connection health monitoring
-
-// monitorConnectionHealth starts a background goroutine to monitor connection health
-func (s *SSHNodeInteractor) monitorConnectionHealth(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.performHealthChecks(ctx)
-		}
-	}
-}
-
-// performHealthChecks performs health checks on all known connections
-func (s *SSHNodeInteractor) performHealthChecks(ctx context.Context) {
-	// This would typically check all hosts that have been connected to
-	// For now, we'll just log that health checks are being performed
-	s.logger.Debug("performing connection health checks")
-
-	// In a real implementation, you would:
-	// 1. Get list of all hosts from connection pool
-	// 2. Perform basic connectivity tests
-	// 3. Update connection health metrics
-	// 4. Close unhealthy connections
-}
-
-// Automatic recovery mechanisms
-
-// attemptRecovery attempts to recover from connection failures
-func (s *SSHNodeInteractor) attemptRecovery(host string, err error) error {
-	s.logger.Info("attempting connection recovery",
-		slog.String("host", host),
-		slog.String("error", err.Error()))
-
-	// Close any existing connections to the host
-	s.sshPool.CloseConnection(host)
-
-	// Reset circuit breaker if it exists
-	s.ResetCircuitBreaker(host)
-
-	// Wait a moment before allowing new connections
-	time.Sleep(1 * time.Second)
-
-	s.logger.Info("recovery attempt completed", slog.String("host", host))
-	return nil
 }

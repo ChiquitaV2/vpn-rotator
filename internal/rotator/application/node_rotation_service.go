@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -14,33 +15,39 @@ import (
 
 // NodeRotationService handles node rotation and peer migration operations
 type NodeRotationService struct {
-	nodeService             node.NodeService
-	peerService             peer.Service
-	ipService               ip.Service
-	nodeProvisioningService *NodeProvisioningService
-	logger                  *slog.Logger
+	nodeService              node.NodeService
+	peerService              peer.Service
+	ipService                ip.Service
+	wireguardManager         nodeinteractor.WireGuardManager
+	provisioningOrchestrator *ProvisioningOrchestrator
+	logger                   *slog.Logger
 }
 
-// NewNodeRotationService creates a new node rotation service
+// NewNodeRotationService creates a new node rotation service with unified provisioning
 func NewNodeRotationService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	nodeProvisioningService *NodeProvisioningService,
+	wireguardManager nodeinteractor.WireGuardManager,
+	provisioningOrchestrator *ProvisioningOrchestrator,
 	logger *slog.Logger,
 ) *NodeRotationService {
 	return &NodeRotationService{
-		nodeService:             nodeService,
-		peerService:             peerService,
-		ipService:               ipService,
-		nodeProvisioningService: nodeProvisioningService,
-		logger:                  logger,
+		nodeService:              nodeService,
+		peerService:              peerService,
+		ipService:                ipService,
+		wireguardManager:         wireguardManager,
+		provisioningOrchestrator: provisioningOrchestrator,
+		logger:                   logger,
 	}
 }
 
 // RotateNodes performs node rotation by creating new nodes and migrating peers
 func (s *NodeRotationService) RotateNodes(ctx context.Context) error {
-	s.logger.Info("starting node rotation")
+	s.logger.Info("starting node rotation with provisioning status awareness")
+
+	// Check provisioning status before making rotation decisions
+	s.logProvisioningStatusForRotation()
 
 	// Get rotation decision
 	rotationDecision, err := s.makeRotationDecision(ctx)
@@ -56,6 +63,12 @@ func (s *NodeRotationService) RotateNodes(ctx context.Context) error {
 	s.logger.Info("rotation decision made",
 		slog.Int("nodes_to_rotate", len(rotationDecision.NodesToRotate)),
 		slog.String("reason", rotationDecision.Reason))
+
+	// Check if we should defer rotation due to active provisioning
+	if s.shouldDeferRotation() {
+		s.logger.Info("deferring rotation due to active provisioning")
+		return nil
+	}
 
 	// Perform rotation for each node that needs it
 	var rotatedCount, migratedCount int
@@ -82,7 +95,7 @@ func (s *NodeRotationService) RotateNodes(ctx context.Context) error {
 				slog.String("error", err.Error()))
 
 			// Cleanup the new node on failure
-			if destroyErr := s.nodeProvisioningService.DestroyNode(ctx, newNode.ID); destroyErr != nil {
+			if destroyErr := s.provisioningOrchestrator.DestroyNode(ctx, newNode.ID); destroyErr != nil {
 				s.logger.Error("failed to cleanup replacement node after migration failure",
 					slog.String("node_id", newNode.ID),
 					slog.String("error", destroyErr.Error()))
@@ -91,7 +104,7 @@ func (s *NodeRotationService) RotateNodes(ctx context.Context) error {
 		}
 
 		// Destroy old node
-		if err := s.nodeProvisioningService.DestroyNode(ctx, nodeToRotate.NodeID); err != nil {
+		if err := s.provisioningOrchestrator.DestroyNode(ctx, nodeToRotate.NodeID); err != nil {
 			s.logger.Error("failed to destroy old node after rotation",
 				slog.String("node_id", nodeToRotate.NodeID),
 				slog.String("error", err.Error()))
@@ -175,25 +188,38 @@ func (s *NodeRotationService) migrateSinglePeer(ctx context.Context, sourcePeer 
 		return fmt.Errorf("failed to migrate peer in domain: %w", err)
 	}
 
-	// Add peer to target node
-	peerConfig := node.PeerConfig{
-		ID:           sourcePeer.ID,
+	// Get target node for its IP address
+	targetNode, err := s.nodeService.GetNode(ctx, targetNodeID)
+	if err != nil {
+		return fmt.Errorf("failed to get target node: %w", err)
+	}
+
+	// Add peer to target node using NodeInteractor directly
+	wgConfig := nodeinteractor.PeerWireGuardConfig{
 		PublicKey:    sourcePeer.PublicKey,
 		PresharedKey: sourcePeer.PresharedKey,
-		AllocatedIP:  newIP.String(),
 		AllowedIPs:   []string{newIP.String() + "/32"},
 	}
 
-	if err := s.nodeService.AddPeerToNode(ctx, targetNodeID, peerConfig); err != nil {
+	if err := s.wireguardManager.AddPeer(ctx, targetNode.IPAddress, wgConfig); err != nil {
 		return fmt.Errorf("failed to add peer to target node: %w", err)
 	}
 
-	// Remove peer from source node
-	if err := s.nodeService.RemovePeerFromNode(ctx, sourceNodeID, sourcePeer.PublicKey); err != nil {
-		s.logger.Warn("failed to remove peer from source node",
+	// Get source node for its IP address
+	sourceNode, err := s.nodeService.GetNode(ctx, sourceNodeID)
+	if err != nil {
+		s.logger.Warn("failed to get source node for peer removal",
 			slog.String("peer_id", sourcePeer.ID),
 			slog.String("source_node_id", sourceNodeID),
 			slog.String("error", err.Error()))
+	} else {
+		// Remove peer from source node using WireGuardManager
+		if err := s.wireguardManager.RemovePeer(ctx, sourceNode.IPAddress, sourcePeer.PublicKey); err != nil {
+			s.logger.Warn("failed to remove peer from source node",
+				slog.String("peer_id", sourcePeer.ID),
+				slog.String("source_node_id", sourceNodeID),
+				slog.String("error", err.Error()))
+		}
 	}
 
 	// Release old IP
@@ -356,16 +382,26 @@ func (s *NodeRotationService) analyzeNodeForRotation(nodeID string, health *node
 	}
 }
 
-// createReplacementNode creates a new node to replace the one being rotated using coordinated provisioning
+// createReplacementNode creates a new node to replace the one being rotated
+// Uses event-driven provisioning when available, with synchronous provisioning as fallback
 func (s *NodeRotationService) createReplacementNode(ctx context.Context, nodeToRotate NodeRotationInfo) (*node.Node, error) {
-	s.logger.Info("creating replacement node using coordinated provisioning",
+	s.logger.Info("creating replacement node",
 		slog.String("for_node", nodeToRotate.NodeID),
 		slog.String("reason", nodeToRotate.Reason),
 		slog.Int("peer_count", nodeToRotate.PeerCount))
 
-	// Use the NodeProvisioningService for coordinated provisioning
+	// Attempt to use asynchronously provisioned node if available
+	if newNode := s.tryUseAsyncProvisionedNode(ctx); newNode != nil {
+		s.logger.Info("using node from async provisioning",
+			slog.String("node_id", newNode.ID),
+			slog.String("replacing_node", nodeToRotate.NodeID))
+		return newNode, nil
+	}
+
+	// Fallback to synchronous provisioning via orchestrator
 	// This ensures proper resource allocation, IP management, and infrastructure setup
-	newNode, err := s.nodeProvisioningService.ProvisionNode(ctx)
+	s.logger.Info("using synchronous provisioning for replacement node")
+	newNode, err := s.provisioningOrchestrator.ProvisionNodeSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to provision replacement node: %w", err)
 	}
@@ -376,6 +412,75 @@ func (s *NodeRotationService) createReplacementNode(ctx context.Context, nodeToR
 		slog.String("replacing_node", nodeToRotate.NodeID))
 
 	return newNode, nil
+}
+
+// tryUseAsyncProvisionedNode attempts to wait for and use an asynchronously provisioned node
+// Returns nil if async provisioning is not available or times out
+func (s *NodeRotationService) tryUseAsyncProvisionedNode(ctx context.Context) *node.Node {
+	// Only wait if provisioning is already in progress
+	if !s.provisioningOrchestrator.IsProvisioning() {
+		return nil
+	}
+
+	waitTime := s.provisioningOrchestrator.GetEstimatedWaitTime()
+	s.logger.Info("async provisioning in progress, waiting for completion",
+		slog.Duration("estimated_wait", waitTime))
+
+	// Wait for async provisioning to complete with timeout
+	timeout := time.NewTimer(waitTime + time.Minute) // Add 1 minute buffer
+	ticker := time.NewTicker(10 * time.Second)       // Check every 10 seconds
+	defer timeout.Stop()
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Warn("context cancelled while waiting for async provisioning")
+			return nil
+
+		case <-timeout.C:
+			s.logger.Warn("timeout waiting for async provisioning, falling back to synchronous")
+			return nil
+
+		case <-ticker.C:
+			// Check if provisioning completed
+			if s.provisioningOrchestrator.IsProvisioning() {
+				continue // Still in progress
+			}
+
+			// Provisioning completed - find the newest node
+			s.logger.Info("async provisioning completed, looking for new node")
+			return s.findNewestActiveNode(ctx)
+		}
+	}
+}
+
+// findNewestActiveNode finds the most recently created active node
+func (s *NodeRotationService) findNewestActiveNode(ctx context.Context) *node.Node {
+	activeStatus := node.StatusActive
+	activeNodes, err := s.nodeService.ListNodes(ctx, node.Filters{
+		Status: &activeStatus,
+	})
+	if err != nil {
+		s.logger.Warn("failed to list active nodes after async provisioning",
+			slog.String("error", err.Error()))
+		return nil
+	}
+
+	if len(activeNodes) == 0 {
+		s.logger.Warn("no active nodes found after async provisioning")
+		return nil
+	}
+
+	// Find the newest node by creation time
+	var newestNode *node.Node
+	for _, activeNode := range activeNodes {
+		if newestNode == nil || activeNode.CreatedAt.After(newestNode.CreatedAt) {
+			newestNode = activeNode
+		}
+	}
+
+	return newestNode
 }
 
 // migratePeersWithRollback migrates peers with proper error handling and rollback capability
@@ -426,4 +531,43 @@ func (s *NodeRotationService) migratePeersWithRollback(ctx context.Context, sour
 		slog.Int("total_peers", len(sourcePeers)))
 
 	return successCount, nil
+}
+
+// shouldDeferRotation determines if rotation should be deferred due to active provisioning
+func (s *NodeRotationService) shouldDeferRotation() bool {
+	if !s.provisioningOrchestrator.IsProvisioning() {
+		return false
+	}
+
+	// Check if provisioning is in early stages (defer rotation)
+	status := s.provisioningOrchestrator.GetCurrentStatus()
+	if status.Progress < 0.8 { // Less than 80% complete
+		waitTime := s.provisioningOrchestrator.GetEstimatedWaitTime()
+		s.logger.Info("deferring rotation due to active provisioning in early stages",
+			slog.Float64("progress", status.Progress),
+			slog.Duration("estimated_wait", waitTime))
+		return true
+	}
+
+	return false
+}
+
+// logProvisioningStatusForRotation logs provisioning status for rotation decision making
+func (s *NodeRotationService) logProvisioningStatusForRotation() {
+	status := s.provisioningOrchestrator.GetCurrentStatus()
+
+	if s.provisioningOrchestrator.IsProvisioning() {
+		s.logger.Info("active provisioning detected during rotation cycle",
+			slog.String("phase", status.Phase),
+			slog.Float64("progress", status.Progress),
+			slog.Duration("elapsed", time.Since(status.StartedAt)))
+
+		if status.EstimatedETA != nil {
+			remainingTime := time.Until(*status.EstimatedETA)
+			s.logger.Info("provisioning timing for rotation scheduling",
+				slog.Duration("estimated_remaining", remainingTime))
+		}
+	} else {
+		s.logger.Debug("no active provisioning detected")
+	}
 }
