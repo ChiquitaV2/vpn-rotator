@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote/ssh"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // SSHNodeInteractor implements NodeInteractor using SSH connections with pooling
@@ -28,7 +29,7 @@ func NewSSHNodeInteractor(sshPrivateKey string, config NodeInteractorConfig, log
 	}
 
 	// Create SSH connection pool
-	sshPool := ssh.NewPool(sshPrivateKey, logger, 5*time.Minute)
+	sshPool := ssh.NewPool(sshPrivateKey, logger, 5*time.Minute, gossh.InsecureIgnoreHostKey())
 	if sshPool == nil {
 		return nil, fmt.Errorf("failed to create SSH connection pool")
 	}

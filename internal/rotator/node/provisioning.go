@@ -333,7 +333,7 @@ func (ps *ProvisioningService) provisionCloudInfrastructure(ctx context.Context,
 	// Report sub-phase: preparing configuration
 	_ = ps.reportProgress(ctx, nodeID, "cloud_provision", 0.15, "Preparing cloud configuration", nil)
 
-	// Create provisioning config using service defaults
+	// Create provisioning config - location and instance type will be determined by the provisioner
 	config := ProvisioningConfig{
 		Region:       ps.getConfigValue(ps.config.DefaultRegion, "nbg1"),
 		InstanceType: ps.getConfigValue(ps.config.DefaultInstanceType, "cx11"),

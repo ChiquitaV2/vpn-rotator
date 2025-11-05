@@ -1,8 +1,15 @@
+// Package events defines all event types, constants, and data structures used throughout
+// the VPN rotator system. This is the single source of truth for event definitions.
 package events
 
 import "time"
 
-// Event type constants for provisioning lifecycle
+// =============================================================================
+// EVENT TYPE CONSTANTS
+// =============================================================================
+// All event types are defined here to ensure consistency across the application
+
+// Provisioning Lifecycle Events
 const (
 	EventProvisionRequested = "provision.requested"
 	EventProvisionProgress  = "provision.progress"
@@ -10,21 +17,34 @@ const (
 	EventProvisionFailed    = "provision.failed"
 )
 
-// Event type constants for node lifecycle
+// Node Lifecycle Events
 const (
 	EventNodeStatusChanged = "node.status.changed"
 	EventNodeCreated       = "node.created"
 	EventNodeDestroyed     = "node.destroyed"
 )
 
-// Event type constants for WireGuard operations
+// WireGuard Operation Events
 const (
 	EventWireGuardPeerAdded   = "node.wireguard.peer_added"
 	EventWireGuardPeerRemoved = "node.wireguard.peer_removed"
 	EventWireGuardConfigSaved = "node.wireguard.config_saved"
 )
 
-// Provisioning phase constants - these match actual provisioning steps
+// Generic Infrastructure Events
+const (
+	EventResourceCreated = "resource.created"
+	EventResourceUpdated = "resource.updated"
+	EventResourceDeleted = "resource.deleted"
+	EventHealthCheck     = "health.check"
+	EventError           = "error.occurred"
+)
+
+// =============================================================================
+// PROVISIONING PHASE CONSTANTS
+// =============================================================================
+// These constants match actual provisioning steps in the system
+
 const (
 	PhaseInitialization   = "initialization"
 	PhaseSubnetAllocation = "subnet_allocation"
@@ -36,6 +56,15 @@ const (
 	PhaseActivation       = "activation"
 	PhaseCompleted        = "completed"
 )
+
+// =============================================================================
+// EVENT DATA STRUCTURES
+// =============================================================================
+// All event payloads are defined below, organized by functional area
+
+// -----------------------------------------------------------------------------
+// Provisioning Events
+// -----------------------------------------------------------------------------
 
 // ProvisionRequestedEvent represents a request to start provisioning
 type ProvisionRequestedEvent struct {
@@ -72,6 +101,10 @@ type ProvisionFailedEvent struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// -----------------------------------------------------------------------------
+// Node Lifecycle Events
+// -----------------------------------------------------------------------------
+
 // NodeStatusChangedEvent represents a node status transition
 type NodeStatusChangedEvent struct {
 	NodeID         string    `json:"node_id"`
@@ -95,6 +128,10 @@ type NodeDestroyedEvent struct {
 	Reason    string    `json:"reason,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
+
+// -----------------------------------------------------------------------------
+// WireGuard Operation Events
+// -----------------------------------------------------------------------------
 
 // WireGuardPeerAddedEvent represents a peer being added to a node
 type WireGuardPeerAddedEvent struct {
@@ -122,4 +159,52 @@ type WireGuardConfigSavedEvent struct {
 	PublicKey  string    `json:"public_key"`
 	ConfigPath string    `json:"config_path,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
+}
+
+// -----------------------------------------------------------------------------
+// Generic Infrastructure Events
+// -----------------------------------------------------------------------------
+
+// ResourceCreatedEvent represents a generic resource creation event
+type ResourceCreatedEvent struct {
+	ResourceType string                 `json:"resource_type"`
+	ResourceID   string                 `json:"resource_id"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	Timestamp    time.Time              `json:"timestamp"`
+}
+
+// ResourceUpdatedEvent represents a generic resource update event
+type ResourceUpdatedEvent struct {
+	ResourceType string                 `json:"resource_type"`
+	ResourceID   string                 `json:"resource_id"`
+	Changes      map[string]interface{} `json:"changes"`
+	Timestamp    time.Time              `json:"timestamp"`
+}
+
+// ResourceDeletedEvent represents a generic resource deletion event
+type ResourceDeletedEvent struct {
+	ResourceType string                 `json:"resource_type"`
+	ResourceID   string                 `json:"resource_id"`
+	Reason       string                 `json:"reason,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	Timestamp    time.Time              `json:"timestamp"`
+}
+
+// HealthCheckEvent represents a system health check event
+type HealthCheckEvent struct {
+	Component string                 `json:"component"`
+	Status    string                 `json:"status"` // "healthy", "degraded", "unhealthy"
+	Message   string                 `json:"message"`
+	Details   map[string]interface{} `json:"details,omitempty"`
+	Timestamp time.Time              `json:"timestamp"`
+}
+
+// ErrorEvent represents a generic error event
+type ErrorEvent struct {
+	Component string                 `json:"component"`
+	Operation string                 `json:"operation"`
+	Error     string                 `json:"error"`
+	Retryable bool                   `json:"retryable"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Timestamp time.Time              `json:"timestamp"`
 }

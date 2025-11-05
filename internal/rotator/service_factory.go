@@ -1,7 +1,6 @@
 package rotator
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
+	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
 )
 
 // ServiceFactory creates and wires all service components with proper dependency injection
@@ -41,7 +41,9 @@ type ServiceComponents struct {
 	NodeInteractor   nodeinteractor.NodeInteractor
 
 	// Event system
-	EventBus *events.ProvisioningEventBus
+	EventBus         sharedevents.EventBus
+	EventPublisher   *events.EventPublisher
+	ProgressReporter events.ProgressReporter
 
 	// Domain services
 	NodeService node.NodeService
@@ -158,7 +160,7 @@ func (f *ServiceFactory) createInfrastructureServices(components *ServiceCompone
 
 // createCloudProvisioner initializes the cloud provisioner
 func (f *ServiceFactory) createCloudProvisioner(components *ServiceComponents) error {
-	f.logger.Debug("initializing cloud provisioner")
+	f.logger.Debug("initializing cloud provisioner with location-based selection")
 
 	// Create Hetzner provisioner
 	hetznerConfig := &provisioner.HetznerConfig{
@@ -168,12 +170,18 @@ func (f *ServiceFactory) createCloudProvisioner(components *ServiceComponents) e
 		SSHPublicKey: f.config.Hetzner.SSHKey,
 	}
 
-	provisioner, err := provisioner.NewHetznerProvisioner(f.config.Hetzner.APIToken, hetznerConfig, f.logger)
+	hetznerProvisioner, err := provisioner.NewHetznerProvisioner(f.config.Hetzner.APIToken, hetznerConfig, f.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create Hetzner provisioner: %w", err)
 	}
 
-	components.CloudProvisioner = provisioner
+	// Log the provisioner configuration
+	f.logger.Info("initialized cloud provisioner",
+		slog.String("server_type", hetznerConfig.ServerType),
+		slog.String("image", hetznerConfig.Image),
+		slog.String("location", hetznerConfig.Location))
+
+	components.CloudProvisioner = hetznerProvisioner
 	f.logger.Debug("cloud provisioner initialized successfully")
 	return nil
 }
@@ -285,20 +293,26 @@ func (f *ServiceFactory) createNodeService(components *ServiceComponents) error 
 func (f *ServiceFactory) createEventSystem(components *ServiceComponents) error {
 	f.logger.Debug("initializing event system")
 
-	// Create event bus with configuration
+	// Create new event system with configuration
 	eventBusConfig := f.createEventBusConfig()
-	eventBus := events.NewProvisioningEventBusWithConfig(eventBusConfig, f.logger)
+
+	// Create underlying event bus
+	eventBus := sharedevents.NewGookitEventBus(eventBusConfig, f.logger)
+
+	// Create provisioning event publisher
+	eventPublisher := events.NewEventPublisher(eventBus)
+	components.EventPublisher = eventPublisher
+
+	// Store underlying event bus for raw access if needed
 	components.EventBus = eventBus
 
-	// Wrap NodeInteractor with event publishing capability
-	if components.NodeInteractor != nil {
-		components.NodeInteractor = nodeinteractor.NewEventPublishingNodeInteractor(
-			components.NodeInteractor,
-			eventBus,
-			f.logger,
-		)
-		f.logger.Debug("node interactor wrapped with event publishing")
-	}
+	// Create progress reporter using new event system
+	progressReporter := events.NewEventBasedProgressReporter(eventPublisher.Provisioning)
+	components.ProgressReporter = progressReporter
+
+	// TODO: Update nodeinteractor.EventPublisher interface to match new event system
+	// For now, we'll skip the event publishing wrapper and use direct event publishing
+	f.logger.Debug("node interactor event publishing wrapper temporarily disabled - needs interface update")
 
 	// Create unified provisioning orchestrator (temporary placeholder - will be recreated)
 	orchestratorConfig := application.OrchestratorConfig{
@@ -314,7 +328,7 @@ func (f *ServiceFactory) createEventSystem(components *ServiceComponents) error 
 
 	// Now recreate the domain service with the orchestrator as its progress reporter
 	provisioningConfig := f.createProvisioningServiceConfig()
-	domainServiceWithReporter := node.NewProvisioningService(
+	provisioningService := node.NewProvisioningService(
 		components.NodeService,
 		components.NodeRepository,
 		components.CloudProvisioner,
@@ -326,14 +340,14 @@ func (f *ServiceFactory) createEventSystem(components *ServiceComponents) error 
 
 	// Finally, create the actual orchestrator with the updated domain service
 	provisioningOrchestrator := application.NewProvisioningOrchestratorWithConfig(
-		domainServiceWithReporter,
+		provisioningService,
 		components.NodeService,
-		eventBus,
+		eventPublisher.Provisioning,
 		orchestratorConfig,
 		f.logger,
 	)
-	domainServiceWithReporter.SetProgressReporter(provisioningOrchestrator)
-	components.ProvisioningService = domainServiceWithReporter
+	provisioningService.SetProgressReporter(progressReporter)
+	components.ProvisioningService = provisioningService
 	components.ProvisioningOrchestrator = provisioningOrchestrator
 
 	f.logger.Debug("event system and provisioning orchestrator initialized successfully")
@@ -351,7 +365,6 @@ func (f *ServiceFactory) createApplicationServices(components *ServiceComponents
 		components.IPService,
 		components.NodeInteractor,
 		components.ProvisioningOrchestrator,
-		components.EventBus,
 		f.logger,
 	)
 	components.VPNService = vpnService
@@ -504,25 +517,6 @@ func (f *ServiceFactory) createProvisioningService(components *ServiceComponents
 	return nil
 }
 
-// noOpProgressReporter is a no-op implementation of ProgressReporter
-type noOpProgressReporter struct{}
-
-func (n *noOpProgressReporter) ReportProgress(ctx context.Context, nodeID, phase string, progress float64, message string, metadata map[string]interface{}) error {
-	return nil
-}
-
-func (n *noOpProgressReporter) ReportPhaseStart(ctx context.Context, nodeID, phase, message string) error {
-	return nil
-}
-
-func (n *noOpProgressReporter) ReportPhaseComplete(ctx context.Context, nodeID, phase, message string) error {
-	return nil
-}
-
-func (n *noOpProgressReporter) ReportError(ctx context.Context, nodeID, phase, errorMsg string, retryable bool) error {
-	return nil
-}
-
 // createProvisioningServiceConfig creates provisioning service configuration
 func (f *ServiceFactory) createProvisioningServiceConfig() node.ProvisioningServiceConfig {
 	// Use async provisioning timeout if configured, otherwise use default
@@ -550,10 +544,11 @@ func (f *ServiceFactory) createProvisioningServiceConfig() node.ProvisioningServ
 }
 
 // createEventBusConfig creates event bus configuration from config
-func (f *ServiceFactory) createEventBusConfig() events.EventBusConfig {
-	return events.EventBusConfig{
-		Mode:    f.config.AsyncProvisioning.EventBusMode,
-		Timeout: f.config.AsyncProvisioning.WorkerTimeout,
+func (f *ServiceFactory) createEventBusConfig() sharedevents.EventBusConfig {
+	return sharedevents.EventBusConfig{
+		Mode:       f.config.AsyncProvisioning.EventBusMode,
+		Timeout:    f.config.AsyncProvisioning.WorkerTimeout,
+		MaxRetries: 3, // Default retry count
 	}
 }
 

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,7 +36,7 @@ type PoolStats struct {
 }
 
 // NewPool creates a new SSH connection pool
-func NewPool(privateKey string, logger *slog.Logger, maxIdle time.Duration) *Pool {
+func NewPool(privateKey string, logger *slog.Logger, maxIdle time.Duration, hostKeyCallback ssh.HostKeyCallback) *Pool {
 	// Parse the private key once for the pool
 	signer, err := ssh.ParsePrivateKey([]byte(privateKey))
 	if err != nil {
@@ -52,7 +50,7 @@ func NewPool(privateKey string, logger *slog.Logger, maxIdle time.Duration) *Poo
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Implement proper host key verification
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         30 * time.Second,
 	}
 
@@ -107,62 +105,25 @@ func (p *Pool) GetConnection(nodeIP string) (Client, error) {
 	return client, nil
 }
 
-// ExecuteCommand executes a command on a node with comprehensive retry logic and error handling
+// ExecuteCommand executes a command on a node. It will get a connection from the
+// pool and execute the command once. Retries should be handled by the caller.
 func (p *Pool) ExecuteCommand(ctx context.Context, nodeIP, command string) (string, error) {
-	maxRetries := 3
-	baseDelay := 1 * time.Second
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff
-			delay := time.Duration(attempt) * baseDelay
-			p.logger.Debug("retrying SSH command after delay",
-				slog.String("node_ip", nodeIP),
-				slog.Int("attempt", attempt+1),
-				slog.Duration("delay", delay))
-
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-
-		result, err := p.executeCommandOnce(ctx, nodeIP, command)
-		if err == nil {
-			return result, nil
-		}
-
-		p.logger.Warn("SSH command failed",
-			slog.String("node_ip", nodeIP),
-			slog.String("command", command),
-			slog.Int("attempt", attempt+1),
-			slog.String("error", err.Error()))
-		p.logger.Debug("result from failed SSH command",
-			slog.String("node_ip", nodeIP),
-			slog.String("command", command),
-			slog.String("result", result))
-
-		// Check if error is retryable
-		if !p.isRetryableSSHError(err) {
-			return "", fmt.Errorf("non-retryable SSH error: %w", err)
-		}
-
-		// Remove connection from pool on error
-		p.CloseConnection(nodeIP)
-	}
-
-	return "", fmt.Errorf("SSH command failed after %d attempts", maxRetries)
-}
-
-// executeCommandOnce executes a command once without retry logic
-func (p *Pool) executeCommandOnce(ctx context.Context, nodeIP, command string) (string, error) {
 	client, err := p.GetConnection(nodeIP)
 	if err != nil {
+		// If we can't get a connection, we should close it to ensure it's re-established next time.
+		p.CloseConnection(nodeIP)
 		return "", fmt.Errorf("failed to get SSH connection: %w", err)
 	}
 
-	return client.RunCommand(ctx, command)
+	output, err := client.RunCommand(ctx, command)
+	if err != nil {
+		// If the command fails, the connection might be stale. Close it so a fresh
+		// one is created on the next attempt.
+		p.CloseConnection(nodeIP)
+		return output, err
+	}
+
+	return output, nil
 }
 
 // CloseConnection closes and removes a connection from the pool
@@ -262,40 +223,4 @@ func (p *Pool) createNewConnection(nodeIP string) (Client, error) {
 // isConnectionHealthy checks if an SSH connection is still healthy
 func (p *Pool) isConnectionHealthy(client Client) bool {
 	return client.IsHealthy()
-}
-
-// isRetryableSSHError determines if an SSH error is worth retrying
-func (p *Pool) isRetryableSSHError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errStr := err.Error()
-
-	// Network-related errors that are typically retryable
-	retryableErrors := []string{
-		"connection refused",
-		"connection reset",
-		"connection timeout",
-		"network is unreachable",
-		"no route to host",
-		"temporary failure",
-		"i/o timeout",
-		"broken pipe",
-		"connection lost",
-	}
-
-	errLower := strings.ToLower(errStr)
-	for _, retryable := range retryableErrors {
-		if strings.Contains(errLower, retryable) {
-			return true
-		}
-	}
-
-	// Check for specific network error types
-	if netErr, ok := err.(net.Error); ok {
-		return netErr.Temporary() || netErr.Timeout()
-	}
-
-	return false
 }

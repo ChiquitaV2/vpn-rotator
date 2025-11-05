@@ -272,7 +272,6 @@ func (r *nodeRepository) GetNodeCapacity(ctx context.Context, nodeID string) (*n
 
 // GetStatistics retrieves node statistics
 func (r *nodeRepository) GetStatistics(ctx context.Context) (*node.Statistics, error) {
-	// Get node count
 	nodeCount, err := r.store.GetNodeCount(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node count: %w", err)
@@ -316,44 +315,6 @@ func (r *nodeRepository) IncrementVersion(ctx context.Context, nodeID string) (i
 	}
 
 	return n.Version + 1, nil
-}
-
-// WithTx executes a function within a transaction
-func (r *nodeRepository) WithTx(ctx context.Context, fn func(node.NodeRepository) error) error {
-	// Check if store supports transactions
-	txStore, ok := r.store.(interface {
-		BeginTx(ctx context.Context) (db.Store, error)
-		Commit() error
-		Rollback() error
-	})
-	if !ok {
-		// If no transaction support, execute directly
-		return fn(r)
-	}
-
-	// Begin transaction
-	tx, err := txStore.BeginTx(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	// Create repository with transaction store
-	txRepo := &nodeRepository{store: tx}
-
-	// Execute function
-	if err := fn(txRepo); err != nil {
-		if rbErr := txStore.Rollback(); rbErr != nil {
-			return fmt.Errorf("failed to rollback transaction after error %v: %w", err, rbErr)
-		}
-		return err
-	}
-
-	// Commit transaction
-	if err := txStore.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
 }
 
 // Helper methods

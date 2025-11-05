@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func TestNewPool(t *testing.T) {
@@ -15,7 +17,7 @@ b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAFwAAAAdzc2gtcn
 NhAAAAAwEAAQAAAQEA1234567890abcdef...
 -----END OPENSSH PRIVATE KEY-----`
 
-	pool := NewPool(privateKey, logger, 5*time.Minute)
+	pool := NewPool(privateKey, logger, 5*time.Minute, ssh.InsecureIgnoreHostKey())
 	if pool == nil {
 		t.Fatal("Expected pool to be created, got nil")
 	}
@@ -83,47 +85,6 @@ func TestCleanupIdleConnections(t *testing.T) {
 
 	if !mockClient.closed {
 		t.Error("Expected mock client to be closed")
-	}
-}
-
-func TestIsRetryableSSHError(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	pool := &Pool{logger: logger}
-
-	tests := []struct {
-		name     string
-		err      error
-		expected bool
-	}{
-		{
-			name:     "nil error",
-			err:      nil,
-			expected: false,
-		},
-		{
-			name:     "connection refused",
-			err:      &mockNetError{msg: "connection refused", temp: true},
-			expected: true,
-		},
-		{
-			name:     "connection timeout",
-			err:      &mockNetError{msg: "connection timeout", timeout: true},
-			expected: true,
-		},
-		{
-			name:     "authentication failed",
-			err:      &mockError{msg: "authentication failed"},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := pool.isRetryableSSHError(tt.err)
-			if result != tt.expected {
-				t.Errorf("Expected %v, got %v for error: %v", tt.expected, result, tt.err)
-			}
-		})
 	}
 }
 

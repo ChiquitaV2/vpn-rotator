@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
@@ -19,7 +18,6 @@ type VPNOrchestratorService struct {
 	nodeRotationService      *NodeRotationService
 	resourceCleanupService   *ResourceCleanupService
 	provisioningOrchestrator *ProvisioningOrchestrator
-	eventBus                 *events.ProvisioningEventBus
 	peerService              peer.Service
 	logger                   *slog.Logger
 }
@@ -32,7 +30,6 @@ func NewVPNOrchestratorService(
 	ipService ip.Service,
 	nodeInteractor nodeinteractor.NodeInteractor,
 	provisioningOrchestrator *ProvisioningOrchestrator,
-	eventBus *events.ProvisioningEventBus,
 	logger *slog.Logger,
 ) VPNService {
 	// NodeInteractor implements WireGuardManager, so we can pass it directly
@@ -41,7 +38,6 @@ func NewVPNOrchestratorService(
 		nodeRotationService:      NewNodeRotationService(nodeService, peerService, ipService, nodeInteractor, provisioningOrchestrator, logger),
 		resourceCleanupService:   NewResourceCleanupService(nodeService, peerService, ipService, logger),
 		provisioningOrchestrator: provisioningOrchestrator,
-		eventBus:                 eventBus,
 		peerService:              peerService,
 		logger:                   logger,
 	}

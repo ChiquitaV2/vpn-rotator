@@ -9,7 +9,7 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
-	"github.com/gookit/event"
+	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
 )
 
 // ProvisioningOrchestrator is the single unified orchestrator for all node provisioning
@@ -18,25 +18,25 @@ import (
 // Responsibilities:
 //   - Coordinates provisioning workflows (sync and async)
 //   - Translates domain progress reports into events
-//   - Manages provisioning state and ETA calculations
 //   - Prevents duplicate provisioning attempts
+//   - Orchestrates the provisioning process
 //
 // Architecture:
 //   - Wraps domain layer node.ProvisioningService (does actual work)
-//   - Implements events.ProgressReporter interface (domain reports to us)
+//   - Consumes events.ProgressReporter interface
 //   - Publishes events to ProvisioningEventBus (application layer consumes)
-//   - Maintains thread-safe in-memory state for progress tracking
+//   - Uses NodeStateTracker for all state queries (no internal state)
 type ProvisioningOrchestrator struct {
-	domainService *node.ProvisioningService
-	nodeService   node.NodeService
-	eventBus      *events.ProvisioningEventBus
-	logger        *slog.Logger
-	config        OrchestratorConfig
+	domainService  *node.ProvisioningService
+	nodeService    node.NodeService
+	eventPublisher *events.ProvisioningEventPublisher
+	stateTracker   *events.NodeStateTracker
+	logger         *slog.Logger
+	config         OrchestratorConfig
 
-	// Thread-safe state management
+	// Historical data for ETA calculations
 	mu                  sync.RWMutex
-	currentProvisioning *ProvisioningState
-	historicalDurations map[string]time.Duration // For ETA calculation
+	historicalDurations map[string]time.Duration
 }
 
 // OrchestratorConfig defines configuration for the provisioning orchestrator
@@ -47,47 +47,20 @@ type OrchestratorConfig struct {
 	MaxConcurrentJobs      int
 }
 
-// ProvisioningState represents the current state of an active provisioning operation
-type ProvisioningState struct {
-	NodeID       string
-	Phase        string
-	Progress     float64 // 0.0 to 1.0
-	StartedAt    time.Time
-	EstimatedETA *time.Time
-	LastUpdated  time.Time
-	ErrorMessage string
-	IsActive     bool
-}
-
-// NewProvisioningOrchestrator creates a new unified provisioning orchestrator
-func NewProvisioningOrchestrator(
-	domainService *node.ProvisioningService,
-	nodeService node.NodeService,
-	eventBus *events.ProvisioningEventBus,
-	logger *slog.Logger,
-) *ProvisioningOrchestrator {
-	defaultConfig := OrchestratorConfig{
-		WorkerTimeout:          15 * time.Minute,
-		ETAHistoryRetention:    10,
-		DefaultProvisioningETA: 3 * time.Minute,
-		MaxConcurrentJobs:      1,
-	}
-
-	return NewProvisioningOrchestratorWithConfig(domainService, nodeService, eventBus, defaultConfig, logger)
-}
-
 // NewProvisioningOrchestratorWithConfig creates an orchestrator with custom configuration
 func NewProvisioningOrchestratorWithConfig(
 	domainService *node.ProvisioningService,
 	nodeService node.NodeService,
-	eventBus *events.ProvisioningEventBus,
+	eventPublisher *events.ProvisioningEventPublisher,
 	config OrchestratorConfig,
 	logger *slog.Logger,
 ) *ProvisioningOrchestrator {
+	statueTracker := events.NewNodeStateTracker(eventPublisher)
 	return &ProvisioningOrchestrator{
 		domainService:       domainService,
 		nodeService:         nodeService,
-		eventBus:            eventBus,
+		eventPublisher:      eventPublisher,
+		stateTracker:        statueTracker,
 		logger:              logger,
 		config:              config,
 		historicalDurations: getDefaultPhaseDurations(),
@@ -104,32 +77,16 @@ func (o *ProvisioningOrchestrator) ProvisionNodeSync(ctx context.Context) (*node
 		return nil, fmt.Errorf("provisioning already in progress")
 	}
 
-	// Set initial state
-	o.setProvisioningState(&ProvisioningState{
-		IsActive:  true,
-		Phase:     "starting",
-		Progress:  0.0,
-		StartedAt: time.Now(),
-	})
-
-	defer func() {
-		// Clear state after completion/error
-		time.AfterFunc(30*time.Second, func() {
-			o.mu.Lock()
-			o.currentProvisioning = nil
-			o.mu.Unlock()
-		})
-	}()
-
 	// Provision via domain service (it will call back to us via ProgressReporter interface)
+	// The state tracking is handled by events published through the ProgressReporter
+	startTime := time.Now()
 	provisionedNode, err := o.domainService.ProvisionNode(ctx)
 	if err != nil {
-		o.setError(err)
 		return nil, err
 	}
 
 	// Update historical data
-	duration := time.Since(o.getStartTime())
+	duration := time.Since(startTime)
 	o.updateHistoricalDuration("total", duration)
 
 	o.logger.Info("synchronous provisioning completed",
@@ -151,7 +108,7 @@ func (o *ProvisioningOrchestrator) ProvisionNodeAsync(ctx context.Context) error
 
 	// Publish provision request event
 	requestID := fmt.Sprintf("provision-%d", time.Now().UnixNano())
-	if err := o.eventBus.PublishProvisionRequested(requestID); err != nil {
+	if err := o.eventPublisher.PublishProvisionRequested(ctx, requestID, "rotator"); err != nil {
 		return fmt.Errorf("failed to publish provision request: %w", err)
 	}
 
@@ -171,36 +128,23 @@ func (o *ProvisioningOrchestrator) StartWorker(ctx context.Context) {
 	o.logger.Info("starting provisioning orchestrator worker")
 
 	// Subscribe to provision request events
-	o.eventBus.SubscribeToProvisionRequests(event.ListenerFunc(func(e event.Event) error {
-		return o.handleProvisionRequest(ctx, e)
-	}))
-
+	o.eventPublisher.OnProvisionRequested(func(eventCtx context.Context, e sharedevents.Event) error {
+		return o.handleProvisionRequest(eventCtx, e)
+	})
 	o.logger.Info("provisioning orchestrator worker started")
+
 }
 
 // handleProvisionRequest handles incoming async provision requests
-func (o *ProvisioningOrchestrator) handleProvisionRequest(ctx context.Context, e event.Event) error {
-	o.mu.Lock()
-
-	// Prevent duplicate provisioning
-	if o.currentProvisioning != nil && o.currentProvisioning.IsActive {
+func (o *ProvisioningOrchestrator) handleProvisionRequest(ctx context.Context, e sharedevents.Event) error {
+	// Prevent duplicate provisioning by checking the state tracker
+	if o.IsProvisioning() {
 		o.logger.Info("provisioning already active, ignoring request")
-		o.mu.Unlock()
 		return nil
 	}
 
-	// Set initial state
-	o.currentProvisioning = &ProvisioningState{
-		IsActive:    true,
-		Phase:       "starting",
-		Progress:    0.0,
-		StartedAt:   time.Now(),
-		LastUpdated: time.Now(),
-	}
-	o.mu.Unlock()
-
 	// Run provisioning in background
-	go o.runProvisioningWithCleanup(ctx)
+	o.runProvisioningWithCleanup(ctx)
 
 	return nil
 }
@@ -209,27 +153,10 @@ func (o *ProvisioningOrchestrator) handleProvisionRequest(ctx context.Context, e
 func (o *ProvisioningOrchestrator) runProvisioningWithCleanup(ctx context.Context) {
 	startTime := time.Now()
 
-	defer func() {
-		// Keep state visible for 30s after completion for monitoring
-		time.AfterFunc(30*time.Second, func() {
-			o.mu.Lock()
-			o.currentProvisioning = nil
-			o.mu.Unlock()
-		})
-	}()
-
-	// Provision via domain service
+	// Provision via domain service (state is managed through events via ProgressReporter)
 	provisionedNode, err := o.domainService.ProvisionNode(ctx)
 
 	if err != nil {
-		o.mu.Lock()
-		if o.currentProvisioning != nil {
-			o.currentProvisioning.ErrorMessage = err.Error()
-			o.currentProvisioning.IsActive = false
-			o.currentProvisioning.LastUpdated = time.Now()
-		}
-		o.mu.Unlock()
-
 		o.logger.Error("async provisioning failed", slog.String("error", err.Error()))
 		return
 	}
@@ -243,208 +170,33 @@ func (o *ProvisioningOrchestrator) runProvisioningWithCleanup(ctx context.Contex
 		slog.Duration("duration", duration))
 }
 
-// ProgressReporter Interface Implementation
-// These methods are called by the domain layer to report progress
-
-// ReportProgress reports provisioning progress from domain layer
-func (o *ProvisioningOrchestrator) ReportProgress(ctx context.Context, nodeID, phase string, progress float64, message string, metadata map[string]interface{}) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if o.currentProvisioning != nil {
-		o.currentProvisioning.NodeID = nodeID
-		o.currentProvisioning.Phase = phase
-		o.currentProvisioning.Progress = progress
-		o.currentProvisioning.LastUpdated = time.Now()
-		o.currentProvisioning.EstimatedETA = o.calculateETALocked(progress)
-
-		// Update phase duration tracking
-		if progress > 0 {
-			elapsed := time.Since(o.currentProvisioning.StartedAt)
-			estimatedPhaseTime := time.Duration(float64(elapsed) / progress)
-			o.historicalDurations[phase] = estimatedPhaseTime
-		}
-	}
-
-	// Publish progress event to event bus
-	if o.eventBus != nil {
-		return o.eventBus.PublishProgress(nodeID, phase, progress, message, metadata)
-	}
-
-	return nil
-}
-
-// ReportPhaseStart reports the start of a new provisioning phase
-func (o *ProvisioningOrchestrator) ReportPhaseStart(ctx context.Context, nodeID, phase, message string) error {
-	o.logger.Debug("phase started", slog.String("node_id", nodeID), slog.String("phase", phase))
-	return nil
-}
-
-// ReportPhaseComplete reports the completion of a provisioning phase
-func (o *ProvisioningOrchestrator) ReportPhaseComplete(ctx context.Context, nodeID, phase, message string) error {
-	// Calculate duration from start of current provisioning
-	var duration time.Duration
-	o.mu.RLock()
-	if o.currentProvisioning != nil {
-		duration = time.Since(o.currentProvisioning.StartedAt)
-	}
-	o.mu.RUnlock()
-
-	o.updateHistoricalDuration(phase, duration)
-	o.logger.Debug("phase completed",
-		slog.String("node_id", nodeID),
-		slog.String("phase", phase),
-		slog.Duration("duration", duration))
-	return nil
-}
-
-// ReportError reports a provisioning error
-func (o *ProvisioningOrchestrator) ReportError(ctx context.Context, nodeID, phase, errorMsg string, retryable bool) error {
-	o.mu.Lock()
-	if o.currentProvisioning != nil {
-		o.currentProvisioning.ErrorMessage = errorMsg
-		o.currentProvisioning.IsActive = false
-		o.currentProvisioning.LastUpdated = time.Now()
-	}
-	o.mu.Unlock()
-
-	// Publish failure event
-	if o.eventBus != nil {
-		return o.eventBus.PublishFailed(nodeID, phase, errorMsg, retryable)
-	}
-
-	return nil
-}
-
-// ReportCompleted reports successful provisioning completion
-func (o *ProvisioningOrchestrator) ReportCompleted(ctx context.Context, nodeID, serverID, ipAddress string, duration time.Duration) error {
-	o.mu.Lock()
-	if o.currentProvisioning != nil {
-		o.currentProvisioning.IsActive = false
-		o.currentProvisioning.Progress = 1.0
-		o.currentProvisioning.Phase = "completed"
-		o.currentProvisioning.LastUpdated = time.Now()
-	}
-	o.mu.Unlock()
-
-	// Publish completion event
-	if o.eventBus != nil {
-		return o.eventBus.PublishCompleted(nodeID, serverID, ipAddress, duration)
-	}
-
-	return nil
-}
-
-// Status Query Methods
+// Status Query Methods (delegated to NodeStateTracker)
 
 // IsProvisioning returns true if provisioning is currently active
 func (o *ProvisioningOrchestrator) IsProvisioning() bool {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return o.currentProvisioning != nil && o.currentProvisioning.IsActive
+	return o.stateTracker.IsProvisioning()
 }
 
 // GetCurrentStatus returns the current provisioning status
-func (o *ProvisioningOrchestrator) GetCurrentStatus() *ProvisioningState {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	if o.currentProvisioning == nil {
-		return &ProvisioningState{IsActive: false}
-	}
-
-	// Return copy to prevent race conditions
-	status := *o.currentProvisioning
-	return &status
+func (o *ProvisioningOrchestrator) GetCurrentStatus() *events.ProvisioningNodeState {
+	return o.stateTracker.GetActiveNode()
 }
 
 // GetEstimatedWaitTime returns estimated time remaining for current provisioning
 func (o *ProvisioningOrchestrator) GetEstimatedWaitTime() time.Duration {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	if o.currentProvisioning == nil || !o.currentProvisioning.IsActive {
-		return 0
+	waitTime := o.stateTracker.GetEstimatedWaitTime()
+	if waitTime > 0 {
+		return waitTime
 	}
-
-	if o.currentProvisioning.EstimatedETA != nil {
-		remaining := time.Until(*o.currentProvisioning.EstimatedETA)
-		if remaining > 0 {
-			return remaining
-		}
-	}
-
 	return o.config.DefaultProvisioningETA
 }
 
 // GetProgress returns current progress (0.0 to 1.0)
 func (o *ProvisioningOrchestrator) GetProgress() float64 {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	if o.currentProvisioning == nil {
-		return 0.0
-	}
-
-	return o.currentProvisioning.Progress
+	return o.stateTracker.GetProgress()
 }
 
 // Helper Methods
-
-// setProvisioningState sets the current provisioning state (thread-safe)
-func (o *ProvisioningOrchestrator) setProvisioningState(state *ProvisioningState) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	state.LastUpdated = time.Now()
-	o.currentProvisioning = state
-}
-
-// setError sets error state (thread-safe)
-func (o *ProvisioningOrchestrator) setError(err error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if o.currentProvisioning != nil {
-		o.currentProvisioning.ErrorMessage = err.Error()
-		o.currentProvisioning.IsActive = false
-		o.currentProvisioning.LastUpdated = time.Now()
-	}
-}
-
-// getStartTime returns provisioning start time (thread-safe)
-func (o *ProvisioningOrchestrator) getStartTime() time.Time {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	if o.currentProvisioning != nil {
-		return o.currentProvisioning.StartedAt
-	}
-
-	return time.Now()
-}
-
-// calculateETALocked calculates ETA (must be called with lock held)
-func (o *ProvisioningOrchestrator) calculateETALocked(currentProgress float64) *time.Time {
-	if currentProgress <= 0 || o.currentProvisioning == nil {
-		return nil
-	}
-
-	totalDuration, exists := o.historicalDurations["total"]
-	if !exists {
-		totalDuration = o.config.DefaultProvisioningETA
-	}
-
-	elapsed := time.Since(o.currentProvisioning.StartedAt)
-	estimatedTotal := time.Duration(float64(elapsed) / currentProgress)
-
-	// Use weighted average with historical data
-	if totalDuration > 0 {
-		estimatedTotal = (estimatedTotal + totalDuration) / 2
-	}
-
-	eta := o.currentProvisioning.StartedAt.Add(estimatedTotal)
-	return &eta
-}
 
 // updateHistoricalDuration updates historical duration data (thread-safe)
 func (o *ProvisioningOrchestrator) updateHistoricalDuration(phase string, duration time.Duration) {

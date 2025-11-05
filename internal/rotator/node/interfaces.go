@@ -50,9 +50,6 @@ type NodeRepository interface {
 
 	// Optimistic locking support
 	IncrementVersion(ctx context.Context, nodeID string) (int64, error)
-
-	// Transaction support
-	WithTx(ctx context.Context, fn func(NodeRepository) error) error
 }
 
 // CloudProvisioner defines the interface for cloud infrastructure provisioning
