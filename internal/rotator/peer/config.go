@@ -1,40 +1,47 @@
 package peer
 
-import "time"
+import (
+	"time"
 
-// Config holds configuration for peer service optimization
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
+)
+
+// Config holds internal configuration for peer service optimization
+// These are hardcoded defaults that should not be user-configurable
 type Config struct {
 	// Cache settings
-	EnableIPCache      bool          `yaml:"enable_ip_cache" json:"enable_ip_cache"`
-	CacheCleanupPeriod time.Duration `yaml:"cache_cleanup_period" json:"cache_cleanup_period"`
-	MaxCacheSize       int           `yaml:"max_cache_size" json:"max_cache_size"`
+	EnableIPCache      bool
+	CacheCleanupPeriod time.Duration
+	MaxCacheSize       int
 
 	// Batch operation settings
-	MaxBatchSize        int           `yaml:"max_batch_size" json:"max_batch_size"`
-	BatchTimeout        time.Duration `yaml:"batch_timeout" json:"batch_timeout"`
-	EnableBatchCreation bool          `yaml:"enable_batch_creation" json:"enable_batch_creation"`
+	MaxBatchSize        int
+	BatchTimeout        time.Duration
+	EnableBatchCreation bool
 
 	// Pool settings
-	EnableObjectPool bool `yaml:"enable_object_pool" json:"enable_object_pool"`
-	MaxPoolSize      int  `yaml:"max_pool_size" json:"max_pool_size"`
+	EnableObjectPool bool
+	MaxPoolSize      int
 
 	// Validation settings
-	StrictValidation bool `yaml:"strict_validation" json:"strict_validation"`
-	EnableMetrics    bool `yaml:"enable_metrics" json:"enable_metrics"`
+	StrictValidation bool
+	EnableMetrics    bool
 }
 
-// DefaultConfig returns default configuration
+// DefaultConfig returns hardcoded peer service configuration from centralized config
+// These settings are intentionally not user-configurable to ensure optimal performance
 func DefaultConfig() *Config {
+	defaults := config.NewInternalDefaults().PeerServiceDefaults()
 	return &Config{
-		EnableIPCache:       true,
-		CacheCleanupPeriod:  5 * time.Minute,
-		MaxCacheSize:        10000,
-		MaxBatchSize:        100,
-		BatchTimeout:        30 * time.Second,
-		EnableBatchCreation: true,
-		EnableObjectPool:    true,
-		MaxPoolSize:         1000,
-		StrictValidation:    true,
-		EnableMetrics:       false,
+		EnableIPCache:       defaults.EnableIPCache,
+		CacheCleanupPeriod:  defaults.CacheCleanupPeriod,
+		MaxCacheSize:        defaults.MaxCacheSize,
+		MaxBatchSize:        defaults.MaxBatchSize,
+		BatchTimeout:        defaults.BatchTimeout,
+		EnableBatchCreation: defaults.EnableBatchCreation,
+		EnableObjectPool:    defaults.EnableObjectPool,
+		MaxPoolSize:         defaults.MaxPoolSize,
+		StrictValidation:    defaults.StrictValidation,
+		EnableMetrics:       defaults.EnableMetrics,
 	}
 }

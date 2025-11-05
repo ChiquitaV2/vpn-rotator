@@ -37,6 +37,7 @@ type ProvisioningOrchestrator struct {
 	// Historical data for ETA calculations
 	mu                  sync.RWMutex
 	historicalDurations map[string]time.Duration
+	unsubscribeFunc     *sharedevents.UnsubscribeFunc
 }
 
 // OrchestratorConfig defines configuration for the provisioning orchestrator
@@ -128,9 +129,26 @@ func (o *ProvisioningOrchestrator) StartWorker(ctx context.Context) {
 	o.logger.Info("starting provisioning orchestrator worker")
 
 	// Subscribe to provision request events
-	o.eventPublisher.OnProvisionRequested(func(eventCtx context.Context, e sharedevents.Event) error {
+	unsubscribeFunc, err := o.eventPublisher.OnProvisionRequested(func(eventCtx context.Context, e sharedevents.Event) error {
 		return o.handleProvisionRequest(eventCtx, e)
 	})
+	if err != nil {
+		o.logger.Error("failed to subscribe to provision request events", slog.String("error", err.Error()))
+		return
+	}
+	o.unsubscribeFunc = &unsubscribeFunc
+
+	// Worker runs until context is cancelled
+	go func() {
+		<-ctx.Done()
+		o.logger.Info("stopping provisioning orchestrator worker due to context cancellation")
+
+		// Unsubscribe from events
+		if o.unsubscribeFunc != nil {
+			(*o.unsubscribeFunc)()
+			o.logger.Info("unsubscribed from provision request events")
+		}
+	}()
 	o.logger.Info("provisioning orchestrator worker started")
 
 }
@@ -144,7 +162,7 @@ func (o *ProvisioningOrchestrator) handleProvisionRequest(ctx context.Context, e
 	}
 
 	// Run provisioning in background
-	o.runProvisioningWithCleanup(ctx)
+	go o.runProvisioningWithCleanup(ctx)
 
 	return nil
 }

@@ -32,17 +32,17 @@ func TestEventDrivenArchitecture(t *testing.T) {
 	err := eventPublisher.Provisioning.PublishProvisionRequested(ctx, "request-123", "test-source")
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Millisecond) // Allow events to process
+	time.Sleep(10 * time.Nanosecond) // Allow events to process
 
 	err = eventPublisher.Provisioning.PublishProvisionProgress(ctx, nodeID, "installing", 0.5, "Installing packages", nil)
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Nanosecond)
 
 	err = eventPublisher.Provisioning.PublishProvisionCompleted(ctx, nodeID, "server-456", "192.168.1.100", time.Minute*2)
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Nanosecond)
 
 	// Verify state tracker received and processed the events
 	state := stateTracker.GetNodeState(nodeID)
@@ -74,7 +74,7 @@ func TestNodeStateTracker(t *testing.T) {
 	err := eventPublisher.Provisioning.PublishProvisionProgress(ctx, nodeID, "validation", 0.2, "Validating input", nil)
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Nanosecond)
 
 	// Should now be provisioning
 	assert.True(t, stateTracker.IsProvisioning())

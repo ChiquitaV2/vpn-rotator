@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -25,35 +26,6 @@ type ProgressReporter interface {
 
 	// ReportCompleted reports successful completion of provisioning
 	ReportCompleted(ctx context.Context, nodeID, serverID, ipAddress string, duration time.Duration) error
-}
-
-// NoOpProgressReporter is a progress reporter that does nothing
-// Useful for testing or when progress reporting is not needed
-type NoOpProgressReporter struct{}
-
-func (n *NoOpProgressReporter) ReportProgress(ctx context.Context, nodeID, phase string, progress float64, message string, metadata map[string]interface{}) error {
-	return nil
-}
-
-func (n *NoOpProgressReporter) ReportPhaseStart(ctx context.Context, nodeID, phase, message string) error {
-	return nil
-}
-
-func (n *NoOpProgressReporter) ReportPhaseComplete(ctx context.Context, nodeID, phase, message string) error {
-	return nil
-}
-
-func (n *NoOpProgressReporter) ReportError(ctx context.Context, nodeID, phase, errorMsg string, retryable bool) error {
-	return nil
-}
-
-func (n *NoOpProgressReporter) ReportCompleted(ctx context.Context, nodeID, serverID, ipAddress string, duration time.Duration) error {
-	return nil
-}
-
-// NewNoOpProgressReporter creates a new no-op progress reporter
-func NewNoOpProgressReporter() ProgressReporter {
-	return &NoOpProgressReporter{}
 }
 
 // EventBasedProgressReporter implements ProgressReporter using the new event system
@@ -181,6 +153,8 @@ func (t *NodeStateTracker) handleProvisionRequested(event sharedevents.Event) {
 		IsActive:    false,
 		Metadata:    metadata,
 	}
+	slog.Info("Provisioning requested", "request_id", requestID)
+
 }
 
 func (t *NodeStateTracker) handleProvisionProgress(event sharedevents.Event) {
@@ -195,11 +169,25 @@ func (t *NodeStateTracker) handleProvisionProgress(event sharedevents.Event) {
 
 	state, exists := t.nodeStates[nodeID]
 	if !exists {
-		// Create new state if it doesn't exist
-		state = &ProvisioningNodeState{
-			NodeID:    nodeID,
-			StartedAt: time.Now(),
-			IsActive:  true,
+		// Upgrade requested state to active provisioning state
+		for _, s := range t.nodeStates {
+			//check for requested state and time proximity, which use a request ID as node ID instead of actual node ID,
+			if s.Phase == "requested" && time.Since(s.StartedAt) < 5*time.Minute {
+				state = s
+				exists = true
+				delete(t.nodeStates, s.NodeID)
+				break
+			}
+			// Remove this requested state since we are creating a new active one
+		}
+
+		if !exists {
+			// Create new state if it doesn't exist
+			state = &ProvisioningNodeState{
+				NodeID:    nodeID,
+				StartedAt: time.Now(),
+				IsActive:  true,
+			}
 		}
 		t.nodeStates[nodeID] = state
 	}
@@ -246,6 +234,7 @@ func (t *NodeStateTracker) handleProvisionCompleted(event sharedevents.Event) {
 	state.IPAddress = ipAddress
 	state.LastUpdated = time.Now()
 	state.Metadata = metadata
+	slog.Info("Provisioning completed", "node_id", nodeID, "server_id", serverID, "ip_address", ipAddress)
 }
 
 func (t *NodeStateTracker) handleProvisionFailed(event sharedevents.Event) {
@@ -296,6 +285,11 @@ func (t *NodeStateTracker) GetActiveNode() *ProvisioningNodeState {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
+	//print every node state for debugging
+	for nodeID, state := range t.nodeStates {
+		slog.Info("Node state", "node_id", nodeID, "state", state)
+	}
+
 	for _, state := range t.nodeStates {
 		if state.IsActive {
 			// Return copy to prevent race conditions
@@ -313,7 +307,7 @@ func (t *NodeStateTracker) IsProvisioning() bool {
 	defer t.mu.RUnlock()
 
 	for _, state := range t.nodeStates {
-		if state.IsActive {
+		if state.IsActive && state.Phase != "completed" {
 			return true
 		}
 	}

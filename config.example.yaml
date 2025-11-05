@@ -1,85 +1,84 @@
 # VPN Rotator Configuration Example
+# This file demonstrates the simplified configuration structure
+# Taking full advantage of Viper's features including environment variable support
+# Hetzner Cloud Provider Settings (REQUIRED)
+hetzner:
+  # API token for Hetzner Cloud (REQUIRED)
+  # Can also be set via: VPN_ROTATOR_HETZNER_API_TOKEN or HETZNER_API_TOKEN env var
+  api_token: "your-hetzner-api-token-here"
+  
+  # Path to SSH private key for server access (REQUIRED)
+  # Can also be set via: VPN_ROTATOR_HETZNER_SSH_PRIVATE_KEY_PATH env var
+  ssh_private_key_path: "/path/to/your/ssh/private/key"
+  
+  # SSH key name in Hetzner Cloud (optional)
+  # Can also be set via: VPN_ROTATOR_HETZNER_SSH_KEY env var
+  ssh_key: "vpn-rotator-key"
+  
+  # Server types to use (optional, default: ["cx11"])
+  # Can also be set via: VPN_ROTATOR_HETZNER_SERVER_TYPES env var (comma-separated)
+  server_types:
+    - "cx11"
+    - "cx21"
+  
+  # Datacenter locations (optional, default: ["nbg1"])
+  # Can also be set via: VPN_ROTATOR_HETZNER_LOCATIONS env var (comma-separated)
+  locations:
+    - "nbg1"
+    - "fsn1"
+    - "hel1"
+  
+  # Server image (optional, default: "ubuntu-22.04")
+  # Can also be set via: VPN_ROTATOR_HETZNER_IMAGE env var
+  image: "ubuntu-22.04"
 
-# Service configuration
-service:
-  shutdown_timeout: 30s
+# VPN Rotation Behavior (ESSENTIAL)
+rotation:
+  # How often to rotate VPN nodes (default: 24h)
+  # Can also be set via: VPN_ROTATOR_ROTATION_INTERVAL env var
+  # Examples: "30m", "1h", "6h", "24h", "48h"
+  interval: "24h"
+  
+  # How long to keep old nodes before cleanup (default: 2h)
+  # Can also be set via: VPN_ROTATOR_ROTATION_CLEANUP_AGE env var
+  # Should be longer than provisioning time
+  cleanup_age: "2h"
 
-# Logging configuration
+# Peer Connection Limits (IMPORTANT)
+peers:
+  # Maximum peers per VPN node (default: 50)
+  # Can also be set via: VPN_ROTATOR_PEERS_MAX_PER_NODE env var
+  max_per_node: 50
+  
+  # Capacity warning threshold 0-100% (default: 80.0)
+  # Can also be set via: VPN_ROTATOR_PEERS_CAPACITY_THRESHOLD env var
+  capacity_threshold: 80.0
+
+# Logging Configuration (BASIC)
 log:
-  level: info      # debug, info, warn, error
-  format: json     # json, text
+  # Log level: debug, info, warn, error (default: info)
+  # Can also be set via: VPN_ROTATOR_LOG_LEVEL env var
+  level: "info"
+  
+  # Log format: json, text (default: json)
+  # Can also be set via: VPN_ROTATOR_LOG_FORMAT env var
+  format: "json"
 
-# API server configuration
+
+# API Server Settings
 api:
+  # API server listen address (default: ":8080")
+  # Can also be set via: VPN_ROTATOR_API_LISTEN_ADDR env var
   listen_addr: ":8080"
 
-# Database configuration
-db:
+# Database Settings
+database:
+  # SQLite database file path (default: "./data/rotator.db")
+  # Can also be set via: VPN_ROTATOR_DATABASE_PATH or DATABASE_PATH env var
   path: "./data/rotator.db"
-  max_open_conns: 25
-  max_idle_conns: 5
-  conn_max_lifetime: 300  # seconds
 
-# Scheduler configuration
-scheduler:
-  rotation_interval: 24h  # How often to rotate nodes
-  cleanup_interval: 1h    # How often to check for cleanup
-  cleanup_age: 2h         # Age before destroying nodes
-
-# Activity monitor configuration
-monitor:
-  interval: 30s           # How often to check node activity
-  ssh_user: root          # SSH user for connecting to nodes
-
-# Hetzner provider configuration
-hetzner:
-  api_token: ""                                    # Set via VPN_ROTATOR_HETZNER_API_TOKEN env var
-  server_types: [ "cx11", "cx21" ]                  # Server types to use
-  image: "ubuntu-22.04"                           # OS image
-  locations: [ "nbg1", "fsn1" ]                     # Datacenter locations
-  ssh_key: ""                                     # SSH public key content
-  ssh_private_key_path: "/path/to/private/key"    # Path to SSH private key
-
-# Node service configuration
-node_service:
-  max_peers_per_node: 50                          # Maximum peers per node
-  capacity_threshold: 80.0                        # Capacity threshold percentage
-  health_check_timeout: 30s                       # Health check timeout
-  provisioning_timeout: 10m                       # Node provisioning timeout
-  destruction_timeout: 5m                         # Node destruction timeout
-  optimal_node_selection: "least_loaded"          # Node selection strategy: least_loaded, round_robin, random
-
-# Circuit breaker configuration
-circuit_breaker:
-  failure_threshold: 5                            # Number of failures before opening
-  reset_timeout: 60s                              # Time before attempting reset
-  max_attempts: 3                                 # Maximum retry attempts
-
-# Async provisioning configuration
-async_provisioning:
-  event_bus_mode: "simple"                        # Event bus mode: simple, wildcard
-  worker_timeout: 15m                             # Maximum time for provisioning operations
-  eta_history_retention: 10                       # Number of historical records for ETA calculation
-  default_provisioning_eta: 3m                    # Default estimated provisioning time
-  progress_update_interval: 5s                    # How often to update progress
-  max_concurrent_jobs: 1                          # Maximum concurrent provisioning jobs
-
-# Peer service optimization configuration
-peer:
-  # Cache settings for performance optimization
-  enable_ip_cache: true                           # Enable IP validation caching
-  cache_cleanup_period: 5m                       # How often to clean up cache
-  max_cache_size: 10000                          # Maximum number of cached IPs
-
-  # Batch operation settings for high throughput
-  max_batch_size: 100                            # Maximum peers per batch operation
-  batch_timeout: 30s                             # Timeout for batch operations
-  enable_batch_creation: true                    # Enable batch peer creation
-
-  # Object pool settings for memory optimization
-  enable_object_pool: true                       # Enable peer object pooling
-  max_pool_size: 1000                           # Maximum objects in pool
-
-  # Validation and monitoring settings
-  strict_validation: true                        # Enable strict validation
-  enable_metrics: false                          # Enable performance metrics collection
+# Service-Level Settings
+service:
+  # Graceful shutdown timeout (default: 30s)
+  # Can also be set via: VPN_ROTATOR_SERVICE_SHUTDOWN_TIMEOUT env var
+  shutdown_timeout: "30s"

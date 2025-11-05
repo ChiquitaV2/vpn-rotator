@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"math"
 	"net"
+
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 )
 
 // NetworkConfig defines the network configuration for IP allocation
+// This now uses the centralized internal configuration
 type NetworkConfig struct {
 	// BaseNetwork is the overall network range (e.g., "10.8.0.0/16")
 	BaseNetwork string
@@ -18,12 +21,14 @@ type NetworkConfig struct {
 	CapacityThreshold float64
 }
 
-// DefaultNetworkConfig returns the default network configuration
+// DefaultNetworkConfig returns the hardcoded network configuration from centralized config
+// Network settings are intentionally not user-configurable to ensure consistency
 func DefaultNetworkConfig() *NetworkConfig {
+	defaults := config.NewInternalDefaults().NetworkDefaults()
 	return &NetworkConfig{
-		BaseNetwork:       "10.8.0.0/16",
-		SubnetMask:        24,
-		CapacityThreshold: 0.80, // 80% capacity warning threshold
+		BaseNetwork:       defaults.BaseNetwork,
+		SubnetMask:        defaults.SubnetMask,
+		CapacityThreshold: defaults.CapacityThreshold,
 	}
 }
 

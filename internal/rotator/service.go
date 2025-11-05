@@ -104,10 +104,12 @@ func (s *Service) initializeScheduler() error {
 	s.logger.Debug("initializing scheduler with application services")
 
 	// Create unified scheduler that uses VPN service for rotation and cleanup
+	// Use internal defaults for scheduler configuration
+	schedulerDefaults := config.NewInternalDefaults().SchedulerDefaults()
 	schedulerManager := scheduler.NewUnifiedManager(
-		s.config.Scheduler.RotationInterval,
-		s.config.Scheduler.CleanupInterval,
-		s.config.Scheduler.CleanupAge,
+		s.config.Rotation.Interval,             // User-configurable rotation interval
+		schedulerDefaults.CleanupCheckInterval, // Internal default cleanup check interval
+		s.config.Rotation.CleanupAge,           // User-configurable cleanup age
 		s.components.VPNService,
 		s.logger,
 	)
