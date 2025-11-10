@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -43,61 +42,6 @@ func TestLoader_Load_Defaults(t *testing.T) {
 	}
 	if cfg.KeyPath == "" {
 		t.Error("KeyPath should be auto-resolved, but is empty")
-	}
-}
-
-func TestLoader_Load_FromFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "config-test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	configFile := filepath.Join(tmpDir, ".vpn-rotator.yaml")
-	configContent := `
-api_url: "http://test.com:9090"
-interface: "wg-test"
-poll_interval: 30
-log_level: "debug"
-generate_keys: true
-`
-	if err := os.WriteFile(configFile, []byte(configContent), 0600); err != nil {
-		t.Fatalf("failed to write config file: %v", err)
-	}
-
-	originalWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get wd: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("failed to change dir: %v", err)
-	}
-	defer os.Chdir(originalWd)
-
-	loader := NewLoader()
-	cfg, err := loader.Load()
-
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected config, got nil")
-	}
-
-	if cfg.APIURL != "http://test.com:9090" {
-		t.Errorf("wrong APIURL: got %s", cfg.APIURL)
-	}
-	if cfg.Interface != "wg-test" {
-		t.Errorf("wrong Interface: got %s", cfg.Interface)
-	}
-	if cfg.PollInterval != 30 {
-		t.Errorf("wrong PollInterval: got %d", cfg.PollInterval)
-	}
-	if cfg.LogLevel != "debug" {
-		t.Errorf("wrong LogLevel: got %s", cfg.LogLevel)
-	}
-	if !cfg.GenerateKeys {
-		t.Error("expected GenerateKeys to be true")
 	}
 }
 

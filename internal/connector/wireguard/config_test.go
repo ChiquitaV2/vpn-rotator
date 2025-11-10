@@ -23,7 +23,7 @@ func TestConfigGenerator_GenerateConfig(t *testing.T) {
 
 	// Test parameters
 	clientKeyPath := tmpDir + "/client.key"
-	serverPublicKey := "/yA8C9GGyQ+o3f5d3PCo/nI/aYgQ8Z5Rro/2r5kGfW4="
+	serverPublicKey := "6M/drTjVVAMzVkNR+hSdw4RRIT1EbqDquukqM2+0HEE="
 	serverIP := "192.168.1.100"
 	serverPort := 51820
 	allowedIPs := "0.0.0.0/0"

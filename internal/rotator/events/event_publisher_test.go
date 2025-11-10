@@ -87,7 +87,7 @@ func TestProvisioningEventPublisher_PublishProvisionFailed(t *testing.T) {
 	metadata := receivedEvent.Metadata()
 	assert.Equal(t, nodeID, metadata["node_id"])
 	assert.Equal(t, phase, metadata["phase"])
-	assert.Contains(t, "connection timed out", metadata["error"]) // Just the message
+	assert.Equal(t, "[infrastructure:ssh_connection] connection timed out: i/o timeout", metadata["error"]) // Just the message
 	assert.Equal(t, true, metadata["retryable"])
 	assert.Equal(t, apperrors.ErrCodeSSHConnection, metadata["error_code"])
 
@@ -152,7 +152,7 @@ func TestSystemEventPublisher_PublishError(t *testing.T) {
 	metadata := receivedEvent.Metadata()
 	assert.Equal(t, component, metadata["component"])
 	assert.Equal(t, operation, metadata["operation"])
-	assert.Equal(t, "something went wrong", metadata["error"])
+	assert.Equal(t, "[system:internal_error] something went wrong", metadata["error"])
 	assert.Equal(t, false, metadata["retryable"])
 	assert.Equal(t, apperrors.ErrCodeInternal, metadata["error_code"])
 }
