@@ -14,7 +14,7 @@ import (
 )
 
 func TestClient_GetPeerStatus(t *testing.T) {
-	log := logger.New("debug", "text")
+	log := logger.NewDevelopment("client_test")
 
 	t.Run("success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +96,7 @@ func TestClient_GetPeerStatus(t *testing.T) {
 }
 
 func TestClient_ConnectPeer(t *testing.T) {
-	log := logger.New("debug", "text")
+	log := logger.NewDevelopment("client_test")
 	key := "test-key"
 	connectReq := &api.ConnectRequest{PublicKey: &key, GenerateKeys: false}
 
@@ -197,7 +197,7 @@ func TestClient_ConnectPeer(t *testing.T) {
 }
 
 func TestClient_DisconnectPeer(t *testing.T) {
-	log := logger.New("debug", "text")
+	log := logger.NewDevelopment("client_test")
 	disconnectReq := &api.DisconnectRequest{PeerID: "peer-123"}
 
 	t.Run("success", func(t *testing.T) {

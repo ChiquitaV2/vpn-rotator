@@ -64,6 +64,8 @@ hetzner:
   api_token: "your-hetzner-token"
   ssh_private_key_path: "/path/to/ssh/key"
   server_types: [ "cx11", "cx21" ]
+  locations: [ "nbg1", "fsn1" ]
+
 
 rotation:
   interval: "24h"
@@ -79,6 +81,12 @@ api:
 
 database:
   path: "./data/rotator.db"
+
+peers:
+  max_per_node: 50
+  capacity_threshold: 80.0
+service:
+  shutdown_timeout: "30s"
 ```
 
 ## Minimal environment variables

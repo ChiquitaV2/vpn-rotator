@@ -1,6 +1,7 @@
 package rotator
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,18 +16,20 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // ServiceFactory creates and wires all service components with proper dependency injection.
 type ServiceFactory struct {
 	config           *config.Config
 	internalDefaults *config.InternalDefaults
-	logger           *slog.Logger
+	logger           *logger.Logger
 }
 
 // NewServiceFactory creates a new service factory.
-func NewServiceFactory(cfg *config.Config, logger *slog.Logger) *ServiceFactory {
+func NewServiceFactory(cfg *config.Config, logger *logger.Logger) *ServiceFactory {
 	return &ServiceFactory{
 		config:           cfg,
 		internalDefaults: config.NewInternalDefaults(),
@@ -65,7 +68,8 @@ type ServiceComponents struct {
 
 // CreateComponents creates all service components with proper dependency injection.
 func (f *ServiceFactory) CreateComponents() (*ServiceComponents, error) {
-	f.logger.Info("creating service components")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_components")
 
 	components := &ServiceComponents{}
 
@@ -73,125 +77,243 @@ func (f *ServiceFactory) CreateComponents() (*ServiceComponents, error) {
 	// 1. Foundational layers (DB, repositories)
 	// 2. Infrastructure services (provisioner, interactor)
 	// 3. Event system
-	// 4. Domain services (depend on previous layers)
+	// 4. domain services (depend on previous layers)
 	// 5. Application services (depend on all previous layers)
 
-	steps := []func(*ServiceComponents) error{
-		f.createDatabaseStore,
-		f.createRepositories,
-		f.createInfrastructureServices,
-		f.createEventSystem,
-		f.createDomainServices,
-		f.createApplicationServices,
+	stepConfigs := []struct {
+		name string
+		fn   func(*ServiceComponents) error
+	}{
+		{"database_store", f.createDatabaseStore},
+		{"repositories", f.createRepositories},
+		{"infrastructure_services", f.createInfrastructureServices},
+		{"event_system", f.createEventSystem},
+		{"domain_services", f.createDomainServices},
+		{"application_services", f.createApplicationServices},
 	}
 
-	for _, step := range steps {
-		if err := step(components); err != nil {
-			return nil, err
+	for _, stepConfig := range stepConfigs {
+		op.With(slog.String("step", stepConfig.name))
+		op.Progress("creating component", slog.String("step", stepConfig.name))
+
+		if err := stepConfig.fn(components); err != nil {
+			factoryErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal,
+				fmt.Sprintf("failed to create %s", stepConfig.name), false)
+			f.logger.ErrorCtx(ctx, "component creation failed", factoryErr,
+				slog.String("step", stepConfig.name))
+			op.Fail(factoryErr, "component creation failed")
+			return nil, factoryErr
 		}
 	}
 
-	f.logger.Info("all service components created successfully")
+	op.Complete("all service components created successfully")
 	return components, nil
 }
 
 func (f *ServiceFactory) createDatabaseStore(c *ServiceComponents) error {
-	f.logger.Debug("initializing database store")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_database_store")
 
 	// Get database defaults from internal configuration
 	dbDefaults := f.internalDefaults.DatabaseDefaults()
+	dbPath := f.config.Database.Path
+
+	f.logger.DebugContext(ctx, "initializing database store",
+		"path", dbPath,
+		"max_open_conns", dbDefaults.MaxOpenConns,
+		"max_idle_conns", dbDefaults.MaxIdleConns,
+		"conn_max_lifetime", dbDefaults.ConnMaxLifetime)
 
 	store, err := db.NewStore(&db.Config{
-		Path:            f.config.Database.Path,
+		Path:            dbPath,
 		MaxOpenConns:    dbDefaults.MaxOpenConns,
 		MaxIdleConns:    dbDefaults.MaxIdleConns,
 		ConnMaxLifetime: int(dbDefaults.ConnMaxLifetime.Seconds()),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to initialize database store: %w", err)
+		dbError := errors.WrapWithDomain(err, errors.DomainDatabase, errors.ErrCodeInternal,
+			"failed to initialize database store", false)
+		f.logger.ErrorCtx(ctx, "database store creation failed", dbError, "path", dbPath)
+		op.Fail(dbError, "database store creation failed")
+		return dbError
 	}
+
 	c.Store = store
+	op.Complete("database store initialized successfully", "path", dbPath)
 	return nil
 }
 
 func (f *ServiceFactory) createRepositories(c *ServiceComponents) error {
-	f.logger.Debug("initializing repositories")
-	c.NodeRepository = store.NewNodeRepository(c.Store)
-	c.PeerRepository = store.NewPeerRepository(c.Store)
-	c.SubnetRepository = store.NewSubnetRepository(c.Store)
+	ctx := context.Background()
+
+	repoOperation := f.logger.StartOp(ctx, "create_repositories", "service_factory")
+
+	f.logger.DebugContext(ctx, "initializing repositories")
+
+	c.NodeRepository = store.NewNodeRepository(c.Store, f.logger)
+	c.PeerRepository = store.NewPeerRepository(c.Store, f.logger)
+	c.SubnetRepository = store.NewSubnetRepository(c.Store, f.logger)
+
+	repoOperation.Complete("repositories created successfully")
+	f.logger.DebugContext(ctx, "repositories initialized successfully")
 	return nil
 }
 
 func (f *ServiceFactory) createInfrastructureServices(c *ServiceComponents) error {
-	f.logger.Debug("initializing infrastructure services")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_infrastructure_services")
+
+	f.logger.DebugContext(ctx, "initializing infrastructure services")
+
 	if err := f.createCloudProvisioner(c); err != nil {
-		return err
+		infraErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal,
+			"failed to create cloud provisioner", false)
+		f.logger.ErrorCtx(ctx, "cloud provisioner creation failed", infraErr)
+		op.Fail(infraErr, "cloud provisioner creation failed")
+		return infraErr
 	}
-	return f.createNodeInteractor(c)
+
+	if err := f.createNodeInteractor(c); err != nil {
+		infraErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal,
+			"failed to create node interactor", false)
+		f.logger.ErrorCtx(ctx, "node interactor creation failed", infraErr)
+		op.Fail(infraErr, "node interactor creation failed")
+		return infraErr
+	}
+
+	op.Complete("infrastructure services initialized successfully")
+	return nil
 }
 
 func (f *ServiceFactory) createCloudProvisioner(c *ServiceComponents) error {
-	f.logger.Debug("initializing cloud provisioner")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_cloud_provisioner")
+
+	defaultLocation := f.getDefaultLocation()
+
+	f.logger.DebugContext(ctx, "initializing cloud provisioner",
+		"server_type", defaultLocation,
+		"image", f.config.Hetzner.Image,
+		"location", defaultLocation)
+
 	hetzerConfig := &provisioner.HetznerConfig{
-		ServerType:   f.getDefaultLocation(),
+		ServerType:   defaultLocation,
 		Image:        f.config.Hetzner.Image,
-		Location:     f.getDefaultLocation(),
+		Location:     defaultLocation,
 		SSHPublicKey: f.config.Hetzner.SSHKey,
 	}
+
 	hetzerProvisioner, err := provisioner.NewHetznerProvisioner(f.config.Hetzner.APIToken, hetzerConfig, f.logger)
 	if err != nil {
-		return fmt.Errorf("failed to create Hetzner provisioner: %w", err)
+		provisionerErr := errors.WrapWithDomain(err, errors.DomainProvisioning, errors.ErrCodeProvisionFailed,
+			"failed to create Hetzner provisioner", false)
+		f.logger.ErrorCtx(ctx, "Hetzner provisioner creation failed", provisionerErr,
+			slog.String("location", defaultLocation), slog.String("image", f.config.Hetzner.Image))
+		op.Fail(provisionerErr, "Hetzner provisioner creation failed")
+		return provisionerErr
 	}
+
 	c.CloudProvisioner = hetzerProvisioner
+	op.Complete("cloud provisioner initialized successfully", "location", defaultLocation)
 	return nil
 }
 
 func (f *ServiceFactory) createNodeInteractor(c *ServiceComponents) error {
-	f.logger.Debug("initializing node interactor")
-	privateKey, err := os.ReadFile(f.config.Hetzner.SSHPrivateKeyPath)
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_node_interactor")
+
+	sshKeyPath := f.config.Hetzner.SSHPrivateKeyPath
+	f.logger.DebugContext(ctx, "initializing node interactor", "ssh_key_path", sshKeyPath)
+
+	privateKey, err := os.ReadFile(sshKeyPath)
 	if err != nil {
-		return fmt.Errorf("failed to read SSH private key: %w", err)
+		interactorErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal,
+			"failed to read SSH private key", false)
+		f.logger.ErrorCtx(ctx, "SSH private key read failed", interactorErr, "path", sshKeyPath)
+		op.Fail(interactorErr, "SSH private key read failed")
+		return interactorErr
 	}
 
 	interactorConfig := f.createNodeInteractorConfig()
 	interactor, err := nodeinteractor.NewSSHNodeInteractor(string(privateKey), interactorConfig, f.logger)
 	if err != nil {
-		return fmt.Errorf("failed to create SSH node interactor: %w", err)
+		interactorErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal,
+			"failed to create SSH node interactor", false)
+		f.logger.ErrorCtx(ctx, "SSH node interactor creation failed", interactorErr)
+		op.Fail(interactorErr, "SSH node interactor creation failed")
+		return interactorErr
 	}
+
 	c.NodeInteractor = interactor
+	op.Complete("node interactor initialized successfully")
 	return nil
 }
 
 func (f *ServiceFactory) createEventSystem(c *ServiceComponents) error {
-	f.logger.Debug("initializing event system")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_event_system")
+
+	f.logger.DebugContext(ctx, "initializing event system")
+
 	eventBusConfig := f.createEventBusConfig()
 	eventBus := sharedevents.NewGookitEventBus(eventBusConfig, f.logger)
-	eventPublisher := events.NewEventPublisher(eventBus)
+	eventPublisher := events.NewEventPublisher(eventBus, f.logger)
 
 	c.EventBus = eventBus
 	c.EventPublisher = eventPublisher
-	c.ProgressReporter = events.NewEventBasedProgressReporter(eventPublisher.Provisioning)
+	c.ProgressReporter = events.NewEventBasedProgressReporter(eventPublisher.Provisioning, f.logger)
+
+	op.Complete("event system initialized successfully")
 	return nil
 }
 
 func (f *ServiceFactory) createDomainServices(c *ServiceComponents) error {
-	f.logger.Debug("initializing domain services")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_domain_services")
+
+	f.logger.DebugContext(ctx, "initializing domain services")
+
+	// Create IP service
 	ipConfig := ip.DefaultNetworkConfig()
 	ipService, err := ip.NewService(c.SubnetRepository, ipConfig, f.logger)
 	if err != nil {
-		return fmt.Errorf("failed to create IP service: %w", err)
+		ipErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal,
+			"failed to create IP service", false)
+		f.logger.ErrorCtx(ctx, "IP service creation failed", ipErr)
+		op.Fail(ipErr, "IP service creation failed")
+		return ipErr
 	}
 	c.IPService = ipService
-	c.PeerService = peer.NewService(c.PeerRepository)
+	f.logger.DebugContext(ctx, "IP service created successfully")
 
+	// Create peer service
+	c.PeerService = peer.NewService(c.PeerRepository, f.logger)
+	f.logger.DebugContext(ctx, "peer service created successfully")
+
+	// Create node service
 	nodeSvcConfig := f.createNodeServiceConfig()
 	c.NodeService = node.NewService(c.NodeRepository, c.CloudProvisioner, c.NodeInteractor, c.NodeInteractor, f.logger, nodeSvcConfig)
+	f.logger.DebugContext(ctx, "node service created successfully")
 
-	return f.createProvisioningService(c)
+	// Create provisioning service
+	if err := f.createProvisioningService(c); err != nil {
+		provErr := errors.WrapWithDomain(err, errors.DomainProvisioning, errors.ErrCodeInternal,
+			"failed to create provisioning service", false)
+		f.logger.ErrorCtx(ctx, "provisioning service creation failed", provErr)
+		op.Fail(provErr, "provisioning service creation failed")
+		return provErr
+	}
+
+	op.Complete("domain services initialized successfully")
+	return nil
 }
 
 func (f *ServiceFactory) createProvisioningService(c *ServiceComponents) error {
-	f.logger.Debug("initializing provisioning service")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_provisioning_service")
+
+	f.logger.DebugContext(ctx, "initializing provisioning service")
+
 	provConfig := f.createProvisioningServiceConfig()
 	provService := node.NewProvisioningService(
 		c.NodeService,
@@ -204,11 +326,18 @@ func (f *ServiceFactory) createProvisioningService(c *ServiceComponents) error {
 	)
 	provService.SetProgressReporter(c.ProgressReporter)
 	c.ProvisioningService = provService
+
+	op.Complete("provisioning service initialized successfully")
 	return nil
 }
 
 func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
-	f.logger.Debug("initializing application services")
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_application_services")
+
+	f.logger.DebugContext(ctx, "initializing application services")
+
+	// Create provisioning orchestrator
 	orchestratorConfig := f.createOrchestratorConfig()
 	provOrchestrator := application.NewProvisioningOrchestratorWithConfig(
 		c.ProvisioningService,
@@ -218,7 +347,9 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		f.logger,
 	)
 	c.ProvisioningOrchestrator = provOrchestrator
+	f.logger.DebugContext(ctx, "provisioning orchestrator created successfully")
 
+	// Create VPN service
 	vpnService := application.NewVPNOrchestratorService(
 		c.NodeService,
 		c.PeerService,
@@ -228,7 +359,9 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		f.logger,
 	)
 	c.VPNService = vpnService
+	f.logger.DebugContext(ctx, "VPN service created successfully")
 
+	// Create admin service
 	adminService := application.NewAdminService(
 		c.NodeService,
 		c.PeerService,
@@ -238,6 +371,9 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		f.logger,
 	)
 	c.AdminService = adminService
+	f.logger.DebugContext(ctx, "admin service created successfully")
+
+	op.Complete("application services initialized successfully")
 	return nil
 }
 

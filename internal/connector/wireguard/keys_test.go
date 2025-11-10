@@ -16,7 +16,7 @@ func TestKeyManager_LoadOrCreateKey(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	log := logger.New("debug", "text")
+	log := logger.NewDevelopment("keys_test")
 	km := NewKeyManager(log)
 	keyPath := filepath.Join(tmpDir, "test.key")
 
@@ -45,7 +45,7 @@ func TestKeyManager_LoadOrCreateKey(t *testing.T) {
 }
 
 func TestKeyManager_GetPublicKey(t *testing.T) {
-	log := logger.New("debug", "text")
+	log := logger.NewDevelopment("keys_test")
 	km := NewKeyManager(log)
 
 	keyPair, err := crypto.GenerateKeyPair()
@@ -69,7 +69,7 @@ func TestKeyManager_SaveAndLoad(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	log := logger.New("debug", "text")
+	log := logger.NewDevelopment("keys_test")
 	km := NewKeyManager(log)
 	keyPath := filepath.Join(tmpDir, "my.key")
 

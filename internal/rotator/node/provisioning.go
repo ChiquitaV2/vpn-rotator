@@ -9,6 +9,8 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // ProvisioningService coordinates node provisioning across IP allocation, cloud provisioning, and node setup
@@ -19,17 +21,17 @@ type ProvisioningService struct {
 	nodeInteractor   nodeinteractor.HealthChecker
 	ipService        ip.Service
 	progressReporter ProgressReporter
-	logger           *slog.Logger
+	logger           *applogger.Logger // <-- Changed
 	config           ProvisioningServiceConfig
 }
 
 // ProgressReporter defines an interface for reporting provisioning progress
-// This allows the service to report progress without coupling to specific event implementations
 type ProgressReporter interface {
 	ReportProgress(ctx context.Context, nodeID, phase string, progress float64, message string, metadata map[string]interface{}) error
 	ReportPhaseStart(ctx context.Context, nodeID, phase, message string) error
 	ReportPhaseComplete(ctx context.Context, nodeID, phase, message string) error
-	ReportError(ctx context.Context, nodeID, phase, errorMsg string, retryable bool) error
+	ReportError(ctx context.Context, nodeID, phase string, err error) error // <-- Signature Changed
+	ReportCompleted(ctx context.Context, nodeID, serverID, ipAddress string, duration time.Duration) error
 }
 
 // ProvisioningServiceConfig contains configuration for node provisioning service
@@ -56,7 +58,7 @@ func NewProvisioningService(
 	cloudProvisioner CloudProvisioner,
 	nodeInteractor nodeinteractor.HealthChecker,
 	ipService ip.Service,
-	logger *slog.Logger,
+	logger *applogger.Logger, // <-- Changed
 	config ProvisioningServiceConfig,
 ) *ProvisioningService {
 	return &ProvisioningService{
@@ -65,8 +67,8 @@ func NewProvisioningService(
 		cloudProvisioner: cloudProvisioner,
 		nodeInteractor:   nodeInteractor,
 		ipService:        ipService,
-		progressReporter: nil,
-		logger:           logger,
+		progressReporter: nil,                                          // Must be set via SetProgressReporter
+		logger:           logger.WithComponent("provisioning.service"), // <-- Scoped logger
 		config:           config,
 	}
 }
@@ -77,8 +79,7 @@ func (ps *ProvisioningService) SetProgressReporter(reporter ProgressReporter) {
 
 // ProvisionNode provisions a new node with coordinated IP allocation, cloud provisioning, and setup
 func (ps *ProvisioningService) ProvisionNode(ctx context.Context) (*Node, error) {
-	startTime := time.Now()
-	ps.logger.Info("starting coordinated node provisioning")
+	op := ps.logger.StartOp(ctx, "ProvisionNode")
 
 	// Create timeout context for the entire provisioning process
 	provisioningCtx, cancel := context.WithTimeout(ctx, ps.config.ProvisioningTimeout)
@@ -90,21 +91,23 @@ func (ps *ProvisioningService) ProvisionNode(ctx context.Context) (*Node, error)
 	// Phase 1: Initialization (5%)
 	_ = ps.reportPhaseStart(provisioningCtx, nodeID, "initialization", "Starting node provisioning")
 
-	// Create database record immediately with "provisioning" status to prevent race conditions
+	// Create database record immediately
 	node, err := ps.createProvisioningRecord(provisioningCtx, nodeID)
 	if err != nil {
-		_ = ps.reportError(provisioningCtx, nodeID, "initialization", err.Error(), false)
-		return nil, fmt.Errorf("failed to create provisioning record: %w", err)
+		_ = ps.reportError(provisioningCtx, nodeID, "initialization", err)
+		ps.logger.ErrorCtx(ctx, "failed to create provisioning record", err)
+		op.Fail(err, "failed to create provisioning record")
+		return nil, err
 	}
 
-	ps.logger.Info("created provisioning node record", slog.String("node_id", nodeID))
+	ps.logger.DebugContext(ctx, "created provisioning node record", slog.String("node_id", nodeID))
 	_ = ps.reportProgress(provisioningCtx, nodeID, "initialization", 0.05, "Database record created", nil)
 
 	// Initialize rollback context for cleanup
 	rollback := &provisioningRollback{
 		nodeID:    nodeID,
 		service:   ps,
-		logger:    ps.logger,
+		logger:    ps.logger, // Pass the logger
 		allocated: make(map[string]bool),
 	}
 
@@ -113,49 +116,37 @@ func (ps *ProvisioningService) ProvisionNode(ctx context.Context) (*Node, error)
 
 	subnet, err := ps.allocateSubnet(provisioningCtx, nodeID, rollback)
 	if err != nil {
-		_ = ps.reportError(provisioningCtx, nodeID, "subnet_allocation", err.Error(), true)
+		_ = ps.reportError(provisioningCtx, nodeID, "subnet_allocation", err)
 		ps.performRollback(provisioningCtx, rollback)
-		return nil, fmt.Errorf("failed to allocate subnet: %w", err)
+		ps.logger.ErrorCtx(ctx, "failed to allocate subnet", err)
+		op.Fail(err, "failed to allocate subnet")
+		return nil, err
 	}
-
-	ps.logger.Info("allocated subnet for node",
-		slog.String("node_id", nodeID),
-		slog.String("subnet", subnet.String()))
-
-	_ = ps.reportProgress(provisioningCtx, nodeID, "subnet_allocation", 0.10,
-		fmt.Sprintf("Subnet allocated: %s", subnet.String()),
-		map[string]interface{}{"subnet": subnet.String()})
+	_ = ps.reportProgress(provisioningCtx, nodeID, "subnet_allocation", 0.10, "Subnet allocated", nil)
 
 	// Phase 3: Cloud Provisioning (65%)
 	_ = ps.reportPhaseStart(provisioningCtx, nodeID, "cloud_provision", "Provisioning cloud infrastructure")
 
 	provisionedNode, err := ps.provisionCloudInfrastructure(provisioningCtx, nodeID, subnet, rollback)
 	if err != nil {
-		_ = ps.reportError(provisioningCtx, nodeID, "cloud_provision", err.Error(), true)
+		_ = ps.reportError(provisioningCtx, nodeID, "cloud_provision", err)
 		ps.performRollback(provisioningCtx, rollback)
-		return nil, fmt.Errorf("failed to provision cloud infrastructure: %w", err)
+		ps.logger.ErrorCtx(ctx, "failed to provision cloud infrastructure", err)
+		op.Fail(err, "failed to provision cloud infrastructure")
+		return nil, err
 	}
-
-	ps.logger.Info("provisioned cloud infrastructure",
-		slog.String("node_id", nodeID),
-		slog.String("server_id", provisionedNode.ServerID),
-		slog.String("ip", provisionedNode.IPAddress))
-
-	_ = ps.reportProgress(provisioningCtx, nodeID, "cloud_provision", 0.65,
-		fmt.Sprintf("Cloud server created: %s", provisionedNode.IPAddress),
-		map[string]interface{}{
-			"server_id":  provisionedNode.ServerID,
-			"ip_address": provisionedNode.IPAddress,
-		})
+	_ = ps.reportProgress(provisioningCtx, nodeID, "cloud_provision", 0.65, "Cloud server created", nil)
 
 	// Phase 4: Update Database Details (70%)
 	_ = ps.reportProgress(provisioningCtx, nodeID, "cloud_provision", 0.70, "Updating database with provisioned details", nil)
 
 	err = ps.updateNodeDetails(provisioningCtx, node, provisionedNode, rollback)
 	if err != nil {
-		_ = ps.reportError(provisioningCtx, nodeID, "cloud_provision", err.Error(), false)
+		_ = ps.reportError(provisioningCtx, nodeID, "cloud_provision", err)
 		ps.performRollback(provisioningCtx, rollback)
-		return nil, fmt.Errorf("failed to update node details: %w", err)
+		ps.logger.ErrorCtx(ctx, "failed to update node details", err)
+		op.Fail(err, "failed to update node details")
+		return nil, err
 	}
 
 	// Phase 5: SSH Connection & Readiness (85%)
@@ -163,17 +154,16 @@ func (ps *ProvisioningService) ProvisionNode(ctx context.Context) (*Node, error)
 
 	err = ps.waitForNodeReadiness(provisioningCtx, nodeID, provisionedNode.IPAddress, rollback)
 	if err != nil {
-		_ = ps.reportError(provisioningCtx, nodeID, "ssh_connection", err.Error(), true)
+		_ = ps.reportError(provisioningCtx, nodeID, "ssh_connection", err)
 		ps.performRollback(provisioningCtx, rollback)
-		return nil, fmt.Errorf("node readiness check failed: %w", err)
+		ps.logger.ErrorCtx(ctx, "node readiness check failed", err)
+		op.Fail(err, "node readiness check failed")
+		return nil, err
 	}
-
 	_ = ps.reportProgress(provisioningCtx, nodeID, "ssh_connection", 0.85, "Node is ready and accessible", nil)
 
 	// Phase 6: Health Check (90%)
-	_ = ps.reportPhaseStart(provisioningCtx, nodeID, "health_check", "Performing health checks")
-
-	// Health check is already part of waitForNodeReadiness, so we just report progress
+	// ... (This is part of readiness)
 	_ = ps.reportProgress(provisioningCtx, nodeID, "health_check", 0.90, "Health checks passed", nil)
 
 	// Phase 7: Activation (95%)
@@ -181,93 +171,93 @@ func (ps *ProvisioningService) ProvisionNode(ctx context.Context) (*Node, error)
 
 	err = ps.activateNode(provisioningCtx, node, rollback)
 	if err != nil {
-		_ = ps.reportError(provisioningCtx, nodeID, "activation", err.Error(), false)
+		_ = ps.reportError(provisioningCtx, nodeID, "activation", err)
 		ps.performRollback(provisioningCtx, rollback)
-		return nil, fmt.Errorf("failed to activate node: %w", err)
+		ps.logger.ErrorCtx(ctx, "failed to activate node", err)
+		op.Fail(err, "failed to activate node")
+		return nil, err
 	}
-
 	_ = ps.reportProgress(provisioningCtx, nodeID, "activation", 0.95, "Node activated successfully", nil)
 
 	// Phase 8: Completion (100%)
-	duration := time.Since(startTime)
-	ps.logger.Info("node provisioning completed successfully",
-		slog.String("node_id", nodeID),
-		slog.String("ip", provisionedNode.IPAddress),
-		slog.String("public_key", provisionedNode.PublicKey),
-		slog.Duration("duration", duration))
-
+	duration := time.Since(op.StartTime)
 	_ = ps.reportProgress(provisioningCtx, nodeID, "completed", 1.0, "Node provisioning completed",
-		map[string]interface{}{
-			"server_id":        provisionedNode.ServerID,
-			"ip_address":       provisionedNode.IPAddress,
-			"public_key":       provisionedNode.PublicKey,
-			"duration_seconds": duration.Seconds(),
-		})
+		map[string]interface{}{"duration_seconds": duration.Seconds()})
+
+	// Report to event bus
+	if ps.progressReporter != nil {
+		_ = ps.progressReporter.ReportCompleted(ctx, nodeID, provisionedNode.ServerID, provisionedNode.IPAddress, duration)
+	}
 
 	// Return the final node state
 	finalNode, err := ps.repository.GetByID(provisioningCtx, nodeID)
 	if err != nil {
-		ps.logger.Warn("failed to get final node state",
-			slog.String("node_id", nodeID),
-			slog.String("error", err.Error()))
+		ps.logger.ErrorCtx(ctx, "failed to get final node state, returning in-memory node", err,
+			slog.String("node_id", nodeID))
+		op.Complete("node provisioning completed with in-memory node returned")
 		return node, nil // Return the node we have
 	}
 
+	op.Complete("node provisioning completed", slog.String("node_id", nodeID))
 	return finalNode, nil
 }
 
 // DestroyNode destroys a node with coordinated cleanup
 func (ps *ProvisioningService) DestroyNode(ctx context.Context, nodeID string) error {
-	ps.logger.Info("starting coordinated node destruction", slog.String("node_id", nodeID))
+	op := ps.logger.StartOp(ctx, "DestroyNode", slog.String("node_id", nodeID))
 
 	// Get node from repository
 	node, err := ps.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
+		ps.logger.ErrorCtx(ctx, "failed to get node", err)
+		op.Fail(err, "failed to get node")
+		return err // Repo returns DomainError
 	}
 
 	// Validate node can be destroyed
 	if err := node.ValidateForDestruction(); err != nil {
-		return fmt.Errorf("node validation failed: %w", err)
+		ps.logger.ErrorCtx(ctx, "node validation for destruction failed", err)
+		op.Fail(err, "node validation for destruction failed")
+		return err // Model returns DomainError
 	}
 
-	// Update status to destroying to prevent race conditions
+	// Update status to destroying
 	if err := node.UpdateStatus(StatusDestroying); err != nil {
-		return fmt.Errorf("failed to update node status: %w", err)
+		ps.logger.ErrorCtx(ctx, "failed to update node status to destroying", err)
+		op.Fail(err, "failed to update node status to destroying")
+		return err // Model returns DomainError
 	}
 
 	if err := ps.repository.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to update node status: %w", err)
+		ps.logger.ErrorCtx(ctx, "failed to save destroying status", err)
+		op.Fail(err, "failed to save destroying status")
+		return err // Repo returns DomainError
 	}
 
 	// Step 1: Release subnet allocation
-	err = ps.ipService.ReleaseNodeSubnet(ctx, nodeID)
-	if err != nil {
-		ps.logger.Warn("failed to release node subnet",
-			slog.String("node_id", nodeID),
-			slog.String("error", err.Error()))
-		// Continue with destruction even if subnet cleanup fails
+	if err = ps.ipService.ReleaseNodeSubnet(ctx, nodeID); err != nil {
+		ps.logger.ErrorCtx(ctx, "failed to release node subnet, continuing destruction", err,
+			slog.String("node_id", nodeID))
+		// Continue with destruction
 	}
 
 	// Step 2: Destroy cloud infrastructure
 	if node.ServerID != "" {
-		err = ps.cloudProvisioner.DestroyNode(ctx, node.ServerID)
-		if err != nil {
-			ps.logger.Error("failed to destroy cloud infrastructure",
-				slog.String("node_id", nodeID),
-				slog.String("server_id", node.ServerID),
-				slog.String("error", err.Error()))
-			// Continue with database cleanup even if cloud destruction fails
+		if err = ps.cloudProvisioner.DestroyNode(ctx, node.ServerID); err != nil {
+			ps.logger.ErrorCtx(ctx, "failed to destroy cloud infrastructure, continuing with db delete", err,
+				slog.String("server_id", node.ServerID))
+			// Continue with database cleanup
 		}
 	}
 
 	// Step 3: Remove from database
-	err = ps.repository.Delete(ctx, nodeID)
-	if err != nil {
-		return fmt.Errorf("failed to delete node from database: %w", err)
+	if err = ps.repository.Delete(ctx, nodeID); err != nil {
+		ps.logger.ErrorCtx(ctx, "failed to delete node from database", err)
+		op.Fail(err, "failed to delete node from database")
+		return err
 	}
 
-	ps.logger.Info("node destruction completed successfully", slog.String("node_id", nodeID))
+	op.Complete("node destroyed successfully")
 	return nil
 }
 
@@ -275,7 +265,7 @@ func (ps *ProvisioningService) DestroyNode(ctx context.Context, nodeID string) e
 
 func (ps *ProvisioningService) reportProgress(ctx context.Context, nodeID, phase string, progress float64, message string, metadata map[string]interface{}) error {
 	if ps.progressReporter == nil {
-		return nil // Silently skip if no reporter configured
+		return nil // Silently skip
 	}
 	return ps.progressReporter.ReportProgress(ctx, nodeID, phase, progress, message, metadata)
 }
@@ -287,44 +277,34 @@ func (ps *ProvisioningService) reportPhaseStart(ctx context.Context, nodeID, pha
 	return ps.progressReporter.ReportPhaseStart(ctx, nodeID, phase, message)
 }
 
-func (ps *ProvisioningService) reportPhaseComplete(ctx context.Context, nodeID, phase, message string) error {
+func (ps *ProvisioningService) reportError(ctx context.Context, nodeID, phase string, err error) error {
 	if ps.progressReporter == nil {
 		return nil
 	}
-	return ps.progressReporter.ReportPhaseComplete(ctx, nodeID, phase, message)
-}
-
-func (ps *ProvisioningService) reportError(ctx context.Context, nodeID, phase, errorMsg string, retryable bool) error {
-	if ps.progressReporter == nil {
-		return nil
-	}
-	return ps.progressReporter.ReportError(ctx, nodeID, phase, errorMsg, retryable)
+	return ps.progressReporter.ReportError(ctx, nodeID, phase, err) // Pass the full error
 }
 
 // Helper methods for provisioning steps
 
 func (ps *ProvisioningService) createProvisioningRecord(ctx context.Context, nodeID string) (*Node, error) {
-	// Create node with provisioning status
-	node, err := NewNode(nodeID, "0.0.0.0", nodeID /*Must be unique at start and will be updated after provisioning*/, 51820) // Placeholder values
+	node, err := NewNode(nodeID, "0.0.0.0", nodeID, 51820) // Placeholder values
 	if err != nil {
-		return nil, err
+		return nil, err // Will be a DomainError from NewNode
 	}
 
 	// Save to repository
 	if err := ps.repository.Create(ctx, node); err != nil {
-		slog.Debug("failed to create provisioning record", slog.String("node_id", nodeID), slog.String("error", err.Error()))
-		return nil, err
+		ps.logger.DebugContext(ctx, "failed to create provisioning record", slog.String("error", err.Error()))
+		return nil, err // Repo returns DomainError
 	}
-
 	return node, nil
 }
 
 func (ps *ProvisioningService) allocateSubnet(ctx context.Context, nodeID string, rollback *provisioningRollback) (*net.IPNet, error) {
 	subnet, err := ps.ipService.AllocateNodeSubnet(ctx, nodeID)
 	if err != nil {
-		return nil, err
+		return nil, err // ipService should return a DomainError
 	}
-
 	rollback.allocated["subnet"] = true
 	return subnet, nil
 }
@@ -347,10 +327,10 @@ func (ps *ProvisioningService) provisionCloudInfrastructure(ctx context.Context,
 	// Report sub-phase: calling cloud provisioner
 	_ = ps.reportProgress(ctx, nodeID, "cloud_provision", 0.20, "Creating cloud server", nil)
 
-	// Use the CloudProvisioner interface
 	provisionedNode, err := ps.cloudProvisioner.ProvisionNode(ctx, config)
 	if err != nil {
-		return nil, err
+		// Assume cloudProvisioner returns a DomainError or wrap it
+		return nil, apperrors.WrapWithDomain(err, apperrors.DomainProvisioning, apperrors.ErrCodeProvisionFailed, "cloud provisioner failed", true)
 	}
 
 	rollback.allocated["cloud"] = true
@@ -362,9 +342,6 @@ func (ps *ProvisioningService) provisionCloudInfrastructure(ctx context.Context,
 			"server_id":  provisionedNode.ServerID,
 			"ip_address": provisionedNode.IPAddress,
 		})
-
-	// Wait for cloud-init (this is a significant portion of provisioning time)
-	time.Sleep(60 * time.Second)
 
 	_ = ps.reportProgress(ctx, nodeID, "cloud_provision", 0.60, "Cloud-init completed", nil)
 
@@ -395,19 +372,16 @@ func (ps *ProvisioningService) getDefaultTags() map[string]string {
 }
 
 func (ps *ProvisioningService) updateNodeDetails(ctx context.Context, node *Node, provisionedNode *ProvisionedNode, rollback *provisioningRollback) error {
-	// Update node with provisioned details
 	node.ServerID = provisionedNode.ServerID
 	node.IPAddress = provisionedNode.IPAddress
 	node.ServerPublicKey = provisionedNode.PublicKey
 	node.UpdatedAt = time.Now()
 	node.Version++
 
-	// Save to repository
 	if err := ps.repository.Update(ctx, node); err != nil {
-		slog.Debug("failed to update node details", slog.String("node_id", node.ID), slog.String("error", err.Error()))
-		return err
+		ps.logger.DebugContext(ctx, "failed to update node details", slog.String("error", err.Error()))
+		return err // Repo returns DomainError
 	}
-
 	rollback.allocated["details"] = true
 	return nil
 }
@@ -423,31 +397,24 @@ func (ps *ProvisioningService) waitForNodeReadiness(ctx context.Context, nodeID,
 	for {
 		select {
 		case <-readinessCtx.Done():
-			return fmt.Errorf("timed out waiting for node %s to be ready", nodeIP)
+			return apperrors.NewInfrastructureError(apperrors.ErrCodeSSHTimeout, "timed out waiting for node to be ready", true, readinessCtx.Err()).
+				WithMetadata("node_id", nodeID).WithMetadata("ip", nodeIP)
 		case <-ticker.C:
 			attemptCount++
-			ps.logger.Debug("checking node readiness",
-				slog.String("node_id", nodeID),
-				slog.String("ip", nodeIP),
+			ps.logger.DebugContext(ctx, "checking node readiness",
 				slog.Int("attempt", attemptCount))
 
-			// Report progress during readiness checks
 			_ = ps.reportProgress(ctx, nodeID, "ssh_connection", 0.75,
 				fmt.Sprintf("Checking node readiness (attempt %d)", attemptCount), nil)
 
-			// Check node health using NodeInteractor
 			health, err := ps.nodeInteractor.CheckNodeHealth(readinessCtx, nodeIP)
 			if err == nil && health.IsHealthy {
-				ps.logger.Info("node is ready",
-					slog.String("node_id", nodeID),
-					slog.String("ip", nodeIP))
+				ps.logger.InfoContext(ctx, "node is ready", slog.String("node_id", nodeID))
 				return nil
 			}
 
 			if err != nil {
-				ps.logger.Debug("node not ready yet",
-					slog.String("node_id", nodeID),
-					slog.String("ip", nodeIP),
+				ps.logger.DebugContext(ctx, "node not ready yet",
 					slog.String("error", err.Error()))
 			}
 		}
@@ -455,14 +422,12 @@ func (ps *ProvisioningService) waitForNodeReadiness(ctx context.Context, nodeID,
 }
 
 func (ps *ProvisioningService) activateNode(ctx context.Context, node *Node, rollback *provisioningRollback) error {
-	// Update status to active
 	if err := node.UpdateStatus(StatusActive); err != nil {
-		return err
+		return err // Model returns DomainError
 	}
 
-	// Save to repository
 	if err := ps.repository.Update(ctx, node); err != nil {
-		return err
+		return err // Repo returns DomainError
 	}
 
 	rollback.allocated["active"] = true
@@ -471,11 +436,11 @@ func (ps *ProvisioningService) activateNode(ctx context.Context, node *Node, rol
 
 func (ps *ProvisioningService) performRollback(ctx context.Context, rollback *provisioningRollback) {
 	if !ps.config.CleanupOnFailure {
-		ps.logger.Info("cleanup on failure disabled, skipping rollback")
+		ps.logger.DebugContext(ctx, "cleanup on failure disabled, skipping rollback")
 		return
 	}
 
-	ps.logger.Info("performing provisioning rollback", slog.String("node_id", rollback.nodeID))
+	ps.logger.InfoContext(ctx, "performing provisioning rollback", slog.String("node_id", rollback.nodeID))
 	rollback.execute(ctx)
 }
 
@@ -484,59 +449,35 @@ type provisioningRollback struct {
 	nodeID    string
 	serverID  string
 	service   *ProvisioningService
-	logger    *slog.Logger
+	logger    *applogger.Logger // <-- Changed
 	allocated map[string]bool
 }
 
 // execute performs the rollback operations in reverse order
 func (r *provisioningRollback) execute(ctx context.Context) {
-	// Rollback in reverse order of allocation
+	// ... (No change in logic, but log calls are now correct) ...
 
-	// Remove active status (if set)
-	if r.allocated["active"] {
-		r.logger.Debug("rolling back node activation", slog.String("node_id", r.nodeID))
-		// Status rollback is handled by deleting the node
-	}
-
-	// Remove updated details (if set)
-	if r.allocated["details"] {
-		r.logger.Debug("rolling back node details update", slog.String("node_id", r.nodeID))
-		// Details rollback is handled by deleting the node
-	}
-
-	// Destroy cloud infrastructure (if provisioned)
 	if r.allocated["cloud"] && r.serverID != "" {
-		r.logger.Debug("rolling back cloud infrastructure",
-			slog.String("node_id", r.nodeID),
-			slog.String("server_id", r.serverID))
-
+		r.logger.DebugContext(ctx, "rolling back cloud infrastructure", slog.String("server_id", r.serverID))
 		if err := r.service.cloudProvisioner.DestroyNode(ctx, r.serverID); err != nil {
-			r.logger.Error("failed to rollback cloud infrastructure",
-				slog.String("node_id", r.nodeID),
-				slog.String("server_id", r.serverID),
-				slog.String("error", err.Error()))
+			r.logger.ErrorCtx(ctx, "failed to rollback cloud infrastructure", err,
+				slog.String("server_id", r.serverID))
 		}
 	}
 
-	// Release subnet (if allocated)
 	if r.allocated["subnet"] {
-		r.logger.Debug("rolling back subnet allocation", slog.String("node_id", r.nodeID))
-
+		r.logger.DebugContext(ctx, "rolling back subnet allocation", slog.String("node_id", r.nodeID))
 		if err := r.service.ipService.ReleaseNodeSubnet(ctx, r.nodeID); err != nil {
-			r.logger.Error("failed to rollback subnet allocation",
-				slog.String("node_id", r.nodeID),
-				slog.String("error", err.Error()))
+			r.logger.ErrorCtx(ctx, "failed to rollback subnet allocation", err,
+				slog.String("node_id", r.nodeID))
 		}
 	}
 
-	// Delete database record (always attempt this)
-	r.logger.Debug("rolling back database record", slog.String("node_id", r.nodeID))
-
+	r.logger.DebugContext(ctx, "rolling back database record", slog.String("node_id", r.nodeID))
 	if err := r.service.repository.Delete(ctx, r.nodeID); err != nil {
-		r.logger.Error("failed to rollback database record",
-			slog.String("node_id", r.nodeID),
-			slog.String("error", err.Error()))
+		r.logger.ErrorCtx(ctx, "failed to rollback database record", err,
+			slog.String("node_id", r.nodeID))
 	}
 
-	r.logger.Info("provisioning rollback completed", slog.String("node_id", r.nodeID))
+	r.logger.InfoContext(ctx, "provisioning rollback completed", slog.String("node_id", r.nodeID))
 }

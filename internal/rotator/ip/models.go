@@ -1,8 +1,9 @@
 package ip
 
 import (
-	"fmt"
 	"net"
+
+	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 )
 
 // IPv4Address represents a validated IPv4 address
@@ -111,11 +112,7 @@ func (r *AllocationRequest) Validate() error {
 		return err
 	}
 	if r.PeerID == "" {
-		return &ValidationError{
-			Field: "peer_id",
-			Value: r.PeerID,
-			Err:   fmt.Errorf("peer ID cannot be empty"),
-		}
+		return sharedErrors.NewPeerError(sharedErrors.ErrCodePeerValidation, "peer ID cannot be empty", false, nil).WithMetadata("peer_id", r.PeerID)
 	}
 	if err := ValidateWireGuardPublicKey(r.PublicKey); err != nil {
 		return err

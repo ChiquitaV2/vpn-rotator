@@ -18,7 +18,7 @@ func TestConfigGenerator_GenerateConfig(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	logger := logger.New("info", "text")
+	logger := logger.NewDevelopment("config_test")
 	cg := NewConfigGenerator(logger)
 
 	// Test parameters
@@ -68,7 +68,7 @@ func TestConfigGenerator_GenerateConfig(t *testing.T) {
 }
 
 func TestConfigGenerator_ValidateConfig(t *testing.T) {
-	logger := logger.New("info", "text")
+	logger := logger.NewDevelopment("config_test")
 	cg := NewConfigGenerator(logger)
 
 	validKeyPair, err := crypto.GenerateKeyPair()

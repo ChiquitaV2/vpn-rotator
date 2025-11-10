@@ -38,7 +38,13 @@ Examples:
 		}
 
 		// Set up logger (quiet for status command)
-		log := logger.New("error", cfg.LogFormat)
+		loggerConfig := logger.LoggerConfig{
+			Level:     logger.LevelError,
+			Format:    logger.OutputFormat(cfg.LogFormat),
+			Component: "connector",
+			Version:   "1.0.0",
+		}
+		log := logger.New(loggerConfig)
 
 		// Create simplified connector
 		conn := connector.NewConnector(cfg, log)

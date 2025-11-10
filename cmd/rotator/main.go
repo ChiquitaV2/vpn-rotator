@@ -14,50 +14,57 @@ import (
 const version = "1.0.0"
 
 func main() {
+	ctx := context.Background()
+
 	// Initialize logger first
-	log := logger.New("info", "json")
-	log.Info("starting vpn-rotator", "version", version)
+	log := logger.NewProduction("rotator", version)
+	log.InfoContext(ctx, "starting vpn-rotator", "version", version)
 
 	// Load configuration
 	loader := config.NewLoader()
 	cfg, err := loader.Load()
 	if err != nil {
-		log.Error("failed to load configuration", "error", err)
+		log.ErrorCtx(ctx, "failed to load configuration", err)
 		os.Exit(1)
 	}
 
-	// Update logger with configured log level and format
-	log = logger.New(cfg.Log.Level, cfg.Log.Format)
-	log.Info("configuration loaded successfully")
+	// Update logger with configured settings
+	loggerConfig := logger.LoggerConfig{
+		Level:     logger.LogLevel(cfg.Log.Level),
+		Format:    logger.OutputFormat(cfg.Log.Format),
+		Component: "rotator",
+		Version:   version,
+	}
+	log = logger.New(loggerConfig)
+	log.DebugContext(ctx, "configuration loaded successfully")
 
 	// Create service instance
-	service, err := rotator.NewService(cfg, log.Logger)
+	service, err := rotator.NewService(cfg, log)
 	if err != nil {
-		log.Error("failed to create service", "error", err)
+		log.ErrorCtx(ctx, "failed to create service", err)
 		os.Exit(1)
 	}
 
 	// Start service with proper error handling
-	ctx := context.Background()
 	if err := service.Start(ctx); err != nil {
-		log.Error("failed to start service", "error", err)
+		log.ErrorCtx(ctx, "failed to start service", err)
 
 		// Attempt graceful cleanup if service creation succeeded but startup failed
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if stopErr := service.Stop(shutdownCtx); stopErr != nil {
-			log.Error("failed to cleanup service after startup failure", "error", stopErr)
+			log.ErrorCtx(ctx, "failed to cleanup service after startup failure", stopErr)
 		}
 
 		os.Exit(1)
 	}
 
-	log.Info("service started successfully, waiting for shutdown signal")
+	log.InfoContext(ctx, "service started successfully, waiting for shutdown signal")
 
 	// Wait for shutdown signal - this blocks until SIGINT/SIGTERM is received
 	// The service handles signal registration and graceful shutdown internally
 	service.WaitForShutdown()
 
-	log.Info("main process exiting")
+	log.InfoContext(ctx, "main process exiting")
 }

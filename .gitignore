@@ -47,3 +47,6 @@ Thumbs.db
 # Coverage
 coverage.txt
 coverage.html
+
+.gemini/
+.config.yaml

@@ -2,11 +2,10 @@ package ssh
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -23,7 +22,7 @@ type Pool struct {
 	mutex       sync.RWMutex
 	maxIdle     time.Duration
 	privateKey  string
-	logger      *slog.Logger
+	logger      *applogger.Logger
 	sshConfig   *ssh.ClientConfig
 }
 
@@ -36,11 +35,13 @@ type PoolStats struct {
 }
 
 // NewPool creates a new SSH connection pool
-func NewPool(privateKey string, logger *slog.Logger, maxIdle time.Duration, hostKeyCallback ssh.HostKeyCallback) *Pool {
+func NewPool(privateKey string, logger *applogger.Logger, maxIdle time.Duration, hostKeyCallback ssh.HostKeyCallback) *Pool {
+	scopedLogger := logger.WithComponent("ssh.pool")
+
 	// Parse the private key once for the pool
 	signer, err := ssh.ParsePrivateKey([]byte(privateKey))
 	if err != nil {
-		logger.Error("failed to parse SSH private key", slog.String("error", err.Error()))
+		scopedLogger.ErrorCtx(context.Background(), "failed to parse SSH private key", err)
 		return nil
 	}
 
@@ -58,7 +59,7 @@ func NewPool(privateKey string, logger *slog.Logger, maxIdle time.Duration, host
 		connections: make(map[string]*Connection),
 		maxIdle:     maxIdle,
 		privateKey:  privateKey,
-		logger:      logger,
+		logger:      scopedLogger,
 		sshConfig:   sshConfig,
 	}
 
@@ -69,7 +70,7 @@ func NewPool(privateKey string, logger *slog.Logger, maxIdle time.Duration, host
 }
 
 // GetConnection retrieves or creates an SSH connection from the pool
-func (p *Pool) GetConnection(nodeIP string) (Client, error) {
+func (p *Pool) GetConnection(ctx context.Context, nodeIP string) (Client, error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -78,19 +79,20 @@ func (p *Pool) GetConnection(nodeIP string) (Client, error) {
 		// Check if connection is still healthy
 		if p.isConnectionHealthy(conn.client) {
 			conn.lastUsed = time.Now()
-			p.logger.Debug("reusing existing SSH connection", slog.String("node_ip", nodeIP))
+			p.logger.DebugContext(ctx, "reusing existing SSH connection", "node_ip", nodeIP)
 			return conn.client, nil
 		} else {
 			// Connection is unhealthy, remove it
-			p.logger.Debug("removing unhealthy SSH connection", slog.String("node_ip", nodeIP))
+			p.logger.DebugContext(ctx, "removing unhealthy SSH connection", "node_ip", nodeIP)
 			conn.client.Close()
 			delete(p.connections, nodeIP)
 		}
 	}
 
 	// Create new connection
-	client, err := p.createNewConnection(nodeIP)
+	client, err := p.createNewConnection(ctx, nodeIP)
 	if err != nil {
+		// createNewConnection already wraps and logs
 		return nil, err
 	}
 
@@ -101,25 +103,26 @@ func (p *Pool) GetConnection(nodeIP string) (Client, error) {
 		nodeIP:   nodeIP,
 	}
 
-	p.logger.Debug("created new SSH connection", slog.String("node_ip", nodeIP))
+	p.logger.DebugContext(ctx, "created new SSH connection", "node_ip", nodeIP)
 	return client, nil
 }
 
-// ExecuteCommand executes a command on a node. It will get a connection from the
-// pool and execute the command once. Retries should be handled by the caller.
+// ExecuteCommand executes a command on a node.
 func (p *Pool) ExecuteCommand(ctx context.Context, nodeIP, command string) (string, error) {
-	client, err := p.GetConnection(nodeIP)
+	client, err := p.GetConnection(ctx, nodeIP)
 	if err != nil {
 		// If we can't get a connection, we should close it to ensure it's re-established next time.
-		p.CloseConnection(nodeIP)
-		return "", fmt.Errorf("failed to get SSH connection: %w", err)
+		p.CloseConnection(ctx, nodeIP)
+		// GetConnection already returns a DomainError
+		return "", err
 	}
 
 	output, err := client.RunCommand(ctx, command)
 	if err != nil {
 		// If the command fails, the connection might be stale. Close it so a fresh
 		// one is created on the next attempt.
-		p.CloseConnection(nodeIP)
+		p.CloseConnection(ctx, nodeIP)
+		// RunCommand already returns a DomainError
 		return output, err
 	}
 
@@ -127,29 +130,29 @@ func (p *Pool) ExecuteCommand(ctx context.Context, nodeIP, command string) (stri
 }
 
 // CloseConnection closes and removes a connection from the pool
-func (p *Pool) CloseConnection(nodeIP string) {
+func (p *Pool) CloseConnection(ctx context.Context, nodeIP string) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	if conn, exists := p.connections[nodeIP]; exists {
 		conn.client.Close()
 		delete(p.connections, nodeIP)
-		p.logger.Debug("closed SSH connection", slog.String("node_ip", nodeIP))
+		p.logger.DebugContext(ctx, "closed SSH connection", "node_ip", nodeIP)
 	}
 }
 
 // CloseAllConnections closes all connections in the pool
-func (p *Pool) CloseAllConnections() {
+func (p *Pool) CloseAllConnections(ctx context.Context) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
 	for nodeIP, conn := range p.connections {
 		conn.client.Close()
-		p.logger.Debug("closed SSH connection during shutdown", slog.String("node_ip", nodeIP))
+		p.logger.DebugContext(ctx, "closed SSH connection during shutdown", "node_ip", nodeIP)
 	}
 
 	p.connections = make(map[string]*Connection)
-	p.logger.Info("closed all SSH connections")
+	p.logger.DebugContext(ctx, "closed all SSH connections")
 }
 
 // CleanupIdleConnections removes idle connections from the pool
@@ -157,6 +160,7 @@ func (p *Pool) CleanupIdleConnections() {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
+	ctx := context.Background() // Use background context for internal cleanup
 	now := time.Now()
 	var removedCount int
 
@@ -165,14 +169,14 @@ func (p *Pool) CleanupIdleConnections() {
 			conn.client.Close()
 			delete(p.connections, nodeIP)
 			removedCount++
-			p.logger.Debug("removed idle SSH connection",
-				slog.String("node_ip", nodeIP),
-				slog.Duration("idle_time", now.Sub(conn.lastUsed)))
+			p.logger.DebugContext(ctx, "removed idle SSH connection",
+				"node_ip", nodeIP,
+				"idle_time", now.Sub(conn.lastUsed))
 		}
 	}
 
 	if removedCount > 0 {
-		p.logger.Info("cleaned up idle SSH connections", slog.Int("removed", removedCount))
+		p.logger.DebugContext(ctx, "cleaned up idle SSH connections", "removed", removedCount)
 	}
 }
 
@@ -216,8 +220,9 @@ func (p *Pool) GetStats() *PoolStats {
 }
 
 // createNewConnection creates a new SSH connection with retry logic
-func (p *Pool) createNewConnection(nodeIP string) (Client, error) {
-	return NewClient(nodeIP, "root", p.privateKey)
+func (p *Pool) createNewConnection(ctx context.Context, nodeIP string) (Client, error) {
+	// NewClient now requires the logger
+	return NewClient(nodeIP, "root", p.privateKey, p.logger)
 }
 
 // isConnectionHealthy checks if an SSH connection is still healthy

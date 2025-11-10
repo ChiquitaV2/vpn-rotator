@@ -4,26 +4,32 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // peerRepository implements peer.Repository using db.Store
 type peerRepository struct {
-	store db.Store
+	store  db.Store
+	logger *applogger.Logger
 }
 
 // NewPeerRepository creates a new peer repository
-func NewPeerRepository(store db.Store) peer.Repository {
+func NewPeerRepository(store db.Store, log *applogger.Logger) peer.Repository {
 	return &peerRepository{
-		store: store,
+		store:  store,
+		logger: log.WithComponent("peer.repository"),
 	}
 }
 
 // Create creates a new peer in the database
 func (r *peerRepository) Create(ctx context.Context, p *peer.Peer) error {
+	start := time.Now()
 	params := db.CreatePeerParams{
 		ID:          p.ID,
 		NodeID:      p.NodeID,
@@ -33,28 +39,30 @@ func (r *peerRepository) Create(ctx context.Context, p *peer.Peer) error {
 	}
 
 	if p.PresharedKey != nil {
-		params.PresharedKey = sql.NullString{
-			String: *p.PresharedKey,
-			Valid:  true,
-		}
+		params.PresharedKey = sql.NullString{String: *p.PresharedKey, Valid: true}
 	}
 
 	_, err := r.store.CreatePeer(ctx, params)
+	r.logger.DBQuery(ctx, "CreatePeer", "peers", time.Since(start), slog.String("peer_id", p.ID))
 	if err != nil {
-		return fmt.Errorf("failed to create peer in database: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to create peer in database", err, slog.String("peer_id", p.ID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to create peer in database", true, err)
 	}
-
 	return nil
 }
 
 // Get retrieves a peer by ID
 func (r *peerRepository) Get(ctx context.Context, peerID string) (*peer.Peer, error) {
+	start := time.Now()
 	dbPeer, err := r.store.GetPeer(ctx, peerID)
+	r.logger.DBQuery(ctx, "GetPeer", "peers", time.Since(start), slog.String("peer_id", peerID))
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, peer.ErrPeerNotFound
+			return nil, apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer %s not found", peerID), false, err)
 		}
-		return nil, fmt.Errorf("failed to get peer: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get peer", err, slog.String("peer_id", peerID))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get peer", true, err)
 	}
 
 	return toDomainPeer(&dbPeer), nil
@@ -62,12 +70,16 @@ func (r *peerRepository) Get(ctx context.Context, peerID string) (*peer.Peer, er
 
 // GetByPublicKey retrieves a peer by public key
 func (r *peerRepository) GetByPublicKey(ctx context.Context, publicKey string) (*peer.Peer, error) {
+	start := time.Now()
 	dbPeer, err := r.store.GetPeerByPublicKey(ctx, publicKey)
+	r.logger.DBQuery(ctx, "GetPeerByPublicKey", "peers", time.Since(start), slog.String("public_key", publicKey))
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, peer.ErrPeerNotFound
+			return nil, apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer with public key %s not found", publicKey), false, err)
 		}
-		return nil, fmt.Errorf("failed to get peer by public key: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get peer by public key", err, slog.String("public_key", publicKey))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get peer by public key", true, err)
 	}
 
 	return toDomainPeer(&dbPeer), nil
@@ -75,20 +87,26 @@ func (r *peerRepository) GetByPublicKey(ctx context.Context, publicKey string) (
 
 // Delete deletes a peer by ID
 func (r *peerRepository) Delete(ctx context.Context, peerID string) error {
+	start := time.Now()
 	err := r.store.DeletePeer(ctx, peerID)
-	if err != nil {
-		return fmt.Errorf("failed to delete peer: %w", err)
-	}
+	r.logger.DBQuery(ctx, "DeletePeer", "peers", time.Since(start), slog.String("peer_id", peerID))
 
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer %s not found for deletion", peerID), false, err)
+		}
+		r.logger.ErrorCtx(ctx, "failed to delete peer", err, slog.String("peer_id", peerID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to delete peer", true, err)
+	}
 	return nil
 }
 
 // List retrieves peers based on filters
 func (r *peerRepository) List(ctx context.Context, filters *peer.Filters) ([]*peer.Peer, error) {
+	start := time.Now()
 	var dbPeers []db.Peer
 	var err error
 
-	// Apply filters
 	if filters != nil && filters.NodeID != nil {
 		dbPeers, err = r.store.GetPeersByNode(ctx, *filters.NodeID)
 	} else if filters != nil && filters.Status != nil {
@@ -96,18 +114,18 @@ func (r *peerRepository) List(ctx context.Context, filters *peer.Filters) ([]*pe
 	} else {
 		dbPeers, err = r.store.GetAllPeers(ctx)
 	}
+	r.logger.DBQuery(ctx, "ListPeers", "peers", time.Since(start), slog.Any("filters", filters))
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to list peers: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to list peers", err, slog.Any("filters", filters))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to list peers", true, err)
 	}
 
-	// Convert to domain peers
 	peers := make([]*peer.Peer, 0, len(dbPeers))
 	for i := range dbPeers {
 		peers = append(peers, toDomainPeer(&dbPeers[i]))
 	}
 
-	// Apply pagination if specified
 	if filters != nil {
 		if filters.Offset != nil && *filters.Offset > 0 {
 			if *filters.Offset >= len(peers) {
@@ -125,168 +143,195 @@ func (r *peerRepository) List(ctx context.Context, filters *peer.Filters) ([]*pe
 
 // GetByNode retrieves all peers for a specific node
 func (r *peerRepository) GetByNode(ctx context.Context, nodeID string) ([]*peer.Peer, error) {
+	start := time.Now()
 	dbPeers, err := r.store.GetPeersByNode(ctx, nodeID)
+	r.logger.DBQuery(ctx, "GetPeersByNode", "peers", time.Since(start), slog.String("node_id", nodeID))
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get peers by node: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get peers by node", err, slog.String("node_id", nodeID))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get peers by node", true, err)
 	}
 
 	peers := make([]*peer.Peer, len(dbPeers))
 	for i := range dbPeers {
 		peers[i] = toDomainPeer(&dbPeers[i])
 	}
-
 	return peers, nil
 }
 
 // GetActiveByNode retrieves active peers for a specific node
 func (r *peerRepository) GetActiveByNode(ctx context.Context, nodeID string) ([]*peer.Peer, error) {
-	dbPeers, err := r.store.GetPeersByNode(ctx, nodeID)
+	peers, err := r.GetByNode(ctx, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get peers by node: %w", err)
+		return nil, err
 	}
 
-	// Filter for active peers
-	activePeers := make([]*peer.Peer, 0, len(dbPeers))
-	for i := range dbPeers {
-		if dbPeers[i].Status == string(peer.StatusActive) {
-			activePeers = append(activePeers, toDomainPeer(&dbPeers[i]))
+	activePeers := make([]*peer.Peer, 0)
+	for _, p := range peers {
+		if p.Status == peer.StatusActive {
+			activePeers = append(activePeers, p)
 		}
 	}
-
 	return activePeers, nil
 }
 
 // GetInactive retrieves peers that have been inactive for the specified duration
 func (r *peerRepository) GetInactive(ctx context.Context, inactiveDuration time.Duration) ([]*peer.Peer, error) {
-	// Convert duration to minutes string for the query
 	minutes := int(inactiveDuration.Minutes())
+	start := time.Now()
 	dbPeers, err := r.store.GetInactivePeers(ctx, sql.NullString{
 		String: fmt.Sprintf("%d", minutes),
 		Valid:  true,
 	})
+	r.logger.DBQuery(ctx, "GetInactivePeers", "peers", time.Since(start), slog.Int("inactive_minutes", minutes))
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get inactive peers: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get inactive peers", err)
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get inactive peers", true, err)
 	}
 
 	peers := make([]*peer.Peer, len(dbPeers))
 	for i := range dbPeers {
 		peers[i] = toDomainPeer(&dbPeers[i])
 	}
-
 	return peers, nil
 }
 
 // UpdateStatus updates a peer's status
 func (r *peerRepository) UpdateStatus(ctx context.Context, peerID string, status peer.Status) error {
+	start := time.Now()
 	err := r.store.UpdatePeerStatus(ctx, db.UpdatePeerStatusParams{
 		ID:     peerID,
 		Status: status.String(),
 	})
-	if err != nil {
-		return fmt.Errorf("failed to update peer status: %w", err)
-	}
+	r.logger.DBQuery(ctx, "UpdatePeerStatus", "peers", time.Since(start), slog.String("peer_id", peerID), slog.String("status", status.String()))
 
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer %s not found for status update", peerID), false, err)
+		}
+		r.logger.ErrorCtx(ctx, "failed to update peer status", err, slog.String("peer_id", peerID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to update peer status", true, err)
+	}
 	return nil
 }
 
 // UpdateLastHandshake updates a peer's last handshake timestamp
 func (r *peerRepository) UpdateLastHandshake(ctx context.Context, peerID string, timestamp time.Time) error {
+	start := time.Now()
 	err := r.store.UpdatePeerLastHandshake(ctx, db.UpdatePeerLastHandshakeParams{
-		ID: peerID,
-		LastHandshakeAt: sql.NullTime{
-			Time:  timestamp,
-			Valid: true,
-		},
+		ID:              peerID,
+		LastHandshakeAt: sql.NullTime{Time: timestamp, Valid: true},
 	})
-	if err != nil {
-		return fmt.Errorf("failed to update peer last handshake: %w", err)
-	}
+	r.logger.DBQuery(ctx, "UpdatePeerLastHandshake", "peers", time.Since(start), slog.String("peer_id", peerID))
 
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer %s not found for handshake update", peerID), false, err)
+		}
+		r.logger.ErrorCtx(ctx, "failed to update peer last handshake", err, slog.String("peer_id", peerID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to update peer last handshake", true, err)
+	}
 	return nil
 }
 
 // UpdateNode updates a peer's node and IP address (for migration)
 func (r *peerRepository) UpdateNode(ctx context.Context, peerID, nodeID, allocatedIP string) error {
+	start := time.Now()
 	err := r.store.UpdatePeerNode(ctx, db.UpdatePeerNodeParams{
 		ID:          peerID,
 		NodeID:      nodeID,
 		AllocatedIp: allocatedIP,
 	})
-	if err != nil {
-		return fmt.Errorf("failed to update peer node: %w", err)
-	}
+	r.logger.DBQuery(ctx, "UpdatePeerNode", "peers", time.Since(start), slog.String("peer_id", peerID), slog.String("new_node_id", nodeID))
 
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer %s not found for node migration", peerID), false, err)
+		}
+		r.logger.ErrorCtx(ctx, "failed to update peer node", err, slog.String("peer_id", peerID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to update peer node", true, err)
+	}
 	return nil
 }
 
 // CheckPublicKeyConflict checks if a public key is already in use
 func (r *peerRepository) CheckPublicKeyConflict(ctx context.Context, publicKey string) (bool, error) {
+	start := time.Now()
 	count, err := r.store.CheckPublicKeyConflict(ctx, publicKey)
-	if err != nil {
-		return false, fmt.Errorf("failed to check public key conflict: %w", err)
-	}
+	r.logger.DBQuery(ctx, "CheckPublicKeyConflict", "peers", time.Since(start), slog.String("public_key", publicKey))
 
+	if err != nil {
+		r.logger.ErrorCtx(ctx, "failed to check public key conflict", err)
+		return false, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to check public key conflict", true, err)
+	}
 	return count > 0, nil
 }
 
 // CheckIPConflict checks if an IP address is already allocated
 func (r *peerRepository) CheckIPConflict(ctx context.Context, ipAddress string) (bool, error) {
+	start := time.Now()
 	count, err := r.store.CheckIPConflict(ctx, ipAddress)
-	if err != nil {
-		return false, fmt.Errorf("failed to check IP conflict: %w", err)
-	}
+	r.logger.DBQuery(ctx, "CheckIPConflict", "peers", time.Since(start), slog.String("ip_address", ipAddress))
 
+	if err != nil {
+		r.logger.ErrorCtx(ctx, "failed to check IP conflict", err)
+		return false, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to check IP conflict", true, err)
+	}
 	return count > 0, nil
 }
 
 // DeleteByNode deletes all peers for a specific node
 func (r *peerRepository) DeleteByNode(ctx context.Context, nodeID string) error {
+	start := time.Now()
 	err := r.store.DeletePeersByNode(ctx, nodeID)
-	if err != nil {
-		return fmt.Errorf("failed to delete peers by node: %w", err)
-	}
+	r.logger.DBQuery(ctx, "DeletePeersByNode", "peers", time.Since(start), slog.String("node_id", nodeID))
 
+	if err != nil {
+		r.logger.ErrorCtx(ctx, "failed to delete peers by node", err, slog.String("node_id", nodeID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to delete peers by node", true, err)
+	}
 	return nil
 }
 
 // CountByNode counts all peers for a specific node
 func (r *peerRepository) CountByNode(ctx context.Context, nodeID string) (int64, error) {
-	peers, err := r.store.GetPeersByNode(ctx, nodeID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to count peers by node: %w", err)
-	}
+	start := time.Now()
+	count, err := r.store.CountPeersByNode(ctx, nodeID)
+	r.logger.DBQuery(ctx, "CountPeersByNode", "peers", time.Since(start), slog.String("node_id", nodeID))
 
-	return int64(len(peers)), nil
+	if err != nil {
+		r.logger.ErrorCtx(ctx, "failed to count peers by node", err, slog.String("node_id", nodeID))
+		return 0, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to count peers by node", true, err)
+	}
+	return count, nil
 }
 
 // CountActiveByNode counts active peers for a specific node
 func (r *peerRepository) CountActiveByNode(ctx context.Context, nodeID string) (int64, error) {
-	peers, err := r.store.GetPeersByNode(ctx, nodeID)
+	start := time.Now()
+	count, err := r.store.CountActivePeersByNode(ctx, nodeID)
+	r.logger.DBQuery(ctx, "CountActivePeersByNode", "peers", time.Since(start), slog.String("node_id", nodeID))
+
 	if err != nil {
-		return 0, fmt.Errorf("failed to count active peers: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to count active peers by node", err, slog.String("node_id", nodeID))
+		return 0, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to count active peers by node", true, err)
 	}
-
-	var count int64
-	for _, p := range peers {
-		if p.Status == string(peer.StatusActive) {
-			count++
-		}
-	}
-
 	return count, nil
 }
 
 // GetStatistics retrieves peer statistics
 func (r *peerRepository) GetStatistics(ctx context.Context) (*peer.Statistics, error) {
+	start := time.Now()
 	dbStats, err := r.store.GetPeerStatistics(ctx)
+	r.logger.DBQuery(ctx, "GetPeerStatistics", "peers", time.Since(start))
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get peer statistics: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get peer statistics", err)
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get peer statistics", true, err)
 	}
 
-	stats := &peer.Statistics{
-		TotalPeers: dbStats.TotalPeers,
-	}
-
+	stats := &peer.Statistics{TotalPeers: dbStats.TotalPeers}
 	if dbStats.ActivePeers.Valid {
 		stats.ActivePeers = int64(dbStats.ActivePeers.Float64)
 	}
@@ -296,7 +341,6 @@ func (r *peerRepository) GetStatistics(ctx context.Context) (*peer.Statistics, e
 	if dbStats.RemovingPeers.Valid {
 		stats.RemovingPeers = int64(dbStats.RemovingPeers.Float64)
 	}
-
 	return stats, nil
 }
 

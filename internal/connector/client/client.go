@@ -11,6 +11,7 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
+	"github.com/gookit/goutil"
 )
 
 // ProvisioningInProgressError indicates that node provisioning is in progress
@@ -38,7 +39,7 @@ type Client struct {
 // NewClient creates a new API client.
 func NewClient(baseURL string, log *logger.Logger) *Client {
 	if log == nil {
-		log = logger.New("info", "text")
+		log = logger.NewDevelopment("client")
 	}
 
 	return &Client{
@@ -115,15 +116,21 @@ func (c *Client) GetProvisioningStatus(ctx context.Context) (*api.ProvisioningIn
 		return &provisioningInfo, nil
 
 	case http.StatusServiceUnavailable:
-		var apiResp api.Response[any]
+		var apiResp api.Response[api.ProvisioningInfo]
 		if err := json.Unmarshal(body, &apiResp); err != nil {
 			return nil, fmt.Errorf("received 503 but failed to decode error: %w", err)
 		}
 
-		if apiResp.Error != nil {
-			return nil, fmt.Errorf("provisioning service unavailable: %s", apiResp.Error.Message)
+		if !apiResp.Success {
+			return nil, fmt.Errorf("API returned success=false without error details")
 		}
-		return nil, fmt.Errorf("provisioning service unavailable")
+
+		provisioningInfo := apiResp.Data
+		c.logger.Debug("fetched provisioning status",
+			"is_active", provisioningInfo.IsActive,
+			"phase", provisioningInfo.Phase,
+			"progress", provisioningInfo.Progress)
+		return &provisioningInfo, nil
 
 	case http.StatusInternalServerError:
 		var apiResp api.Response[any]
@@ -433,14 +440,29 @@ func (c *Client) connectPeerOnce(ctx context.Context, req *api.ConnectRequest) (
 		if err := json.Unmarshal(body, &provResp); err != nil {
 			return nil, fmt.Errorf("received 503 but failed to decode provisioning response: %w", err)
 		}
+		if provResp.Message == "" {
+			provResp.Message = "Service unavailable, node provisioning may be in progress"
+		}
+		if provResp.EstimatedWait == 0 {
+			provResp.EstimatedWait, _ = goutil.ToInt(resp.Header.Get("Retry-After"))
+		}
+		if provResp.RetryAfter == 0 && resp.Header.Get("Retry-After") != "" {
+			retryheader, err := goutil.ToInt(resp.Header.Get("Retry-After"))
+			if err == nil {
+				provResp.RetryAfter = retryheader
+			}
+		}
 
 		c.logger.Warn("no active node available for peer connection",
 			"message", provResp.Message,
 			"estimated_wait", provResp.EstimatedWait,
 			"retry_after", provResp.RetryAfter,
 		)
-		return nil, fmt.Errorf("no active node available: %s (retry after %d seconds)",
-			provResp.Message, provResp.RetryAfter)
+		return nil, &ProvisioningInProgressError{
+			Message:       provResp.Message,
+			EstimatedWait: provResp.EstimatedWait,
+			RetryAfter:    provResp.RetryAfter,
+		}
 
 	case http.StatusInternalServerError:
 		var apiResp api.Response[any]

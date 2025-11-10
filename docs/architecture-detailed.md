@@ -8,11 +8,12 @@ VPN Rotator is a self-hosted system that automatically rotates WireGuard VPN nod
 
 ### Key Components
 
-1. **Rotator Service** - Core backend service managing node lifecycle and peer management
+1. **Rotator Service** - Core backend service with coordinated provisioning architecture
 2. **Connector Client** - CLI tool for client devices
 3. **Database** - SQLite for state persistence with peer and subnet management
 4. **Hetzner Cloud** - Infrastructure provider for WireGuard nodes
 5. **Peer Management System** - Comprehensive peer lifecycle management with IP allocation
+6. **Coordinated Provisioning Service** - Atomic node provisioning with resource management
 
 ## High-Level Architecture
 
@@ -62,24 +63,26 @@ graph LR
     subgraph "Rotator Service"
         A["HTTP API<br/>Peer Management Endpoints"]
         B["Scheduler<br/>Rotation & Cleanup"]
-        C["Provisioner<br/>Hetzner API"]
-        D["Orchestrator<br/>Peer-Aware State Management"]
+        C["Cloud Provisioner<br/>Hetzner API"]
+        D["VPN Orchestrator<br/>Peer-Aware State Management"]
         E["Health Checker<br/>WireGuard Validation"]
         F["Config Loader<br/>YAML + ENV"]
         G["Enhanced Logger<br/>Structured Logging"]
         H["Peer Manager<br/>Lifecycle & Database Ops"]
         I["IP Manager<br/>Subnet & IP Allocation"]
         J["Node Manager<br/>SSH & Peer Config"]
+        K["Provisioning Service<br/>Coordinated Node Creation"]
+        L["Node Provisioning Service<br/>Application Layer Coordination"]
     end
     
     subgraph "Data Layer"
-        K["SQLite DB<br/>Nodes, Peers, Subnets"]
+        M["SQLite DB<br/>Nodes, Peers, Subnets"]
     end
     
     subgraph "External Services"
-        L["Hetzner Cloud<br/>API & VMs"]
-        M["Cloud Init<br/>Scripts"]
-        N["SSH Pool<br/>Node Connections"]
+        O["Hetzner Cloud<br/>API & VMs"]
+        P["Cloud Init<br/>Scripts"]
+        Q["SSH Pool<br/>Node Connections"]
     end
     
     A --> D
@@ -87,17 +90,24 @@ graph LR
     A --> I
     A --> J
     B --> D
-    D --> C
+    D --> L
+    L --> K
+    K --> J
+    K --> C
+    K --> I
     D --> H
     D --> I
     D --> J
     D --> E
-    H <--> K
-    I <--> K
+    H <--> M
+    I <--> M
     J --> I
-    J --> N
-    D <--> K
-    C --> L
+    J --> Q
+    D <--> M
+    C --> O
+    
+    style K fill:#FF9800,stroke:#F57C00,color:#fff
+    style L fill:#FF9800,stroke:#F57C00,color:#fff
     C --> M
     F --> A
     F --> D
@@ -114,6 +124,82 @@ graph LR
 
 
 ```
+
+## Coordinated Provisioning Architecture
+
+The system uses a coordinated provisioning approach for reliable node management with atomic resource allocation:
+
+```mermaid
+graph TB
+    subgraph "Application Layer"
+        A["VPN Orchestrator Service"]
+        B["Peer Connection Service"]
+        C["Node Rotation Service"]
+        D["Node Provisioning Service"]
+    end
+    
+    subgraph "Domain Layer"
+        E["Provisioning Service<br/>Coordinated Node Creation"]
+        F["Node Service<br/>Node Management"]
+        G["IP Service<br/>Subnet Management"]
+        H["Peer Service<br/>Peer Management"]
+    end
+    
+    subgraph "Infrastructure Layer"
+        I["Cloud Provisioner<br/>Hetzner API"]
+        J["Node Interactor<br/>SSH Management"]
+        K["Repository Layer<br/>Database Access"]
+    end
+    
+    subgraph "External Services"
+        L["Hetzner Cloud<br/>Infrastructure"]
+        M["SQLite Database<br/>State Storage"]
+    end
+    
+    A --> B
+    A --> C
+    B --> D
+    C --> D
+    D --> E
+    
+    E --> F
+    E --> G
+    E --> I
+    E --> K
+    
+    F --> I
+    F --> J
+    F --> K
+    
+    G --> K
+    H --> K
+    
+    I --> L
+    J --> L
+    K --> M
+    
+    style E fill:#FF9800,stroke:#F57C00,color:#fff
+    style D fill:#FF9800,stroke:#F57C00,color:#fff
+```
+
+### Provisioning Flow
+
+1. **Request Initiation**: Application services request node provisioning
+2. **Resource Coordination**: Provisioning service coordinates all resources atomically
+3. **Infrastructure Creation**: Cloud provisioner creates VM on Hetzner Cloud
+4. **IP Allocation**: IP service allocates subnet and client IPs
+5. **Node Registration**: Node service creates database record
+6. **Configuration Setup**: Node interactor configures WireGuard via SSH
+7. **Validation**: Health checks ensure node is ready
+8. **Rollback on Failure**: Any failure triggers complete resource cleanup
+
+### Benefits
+
+- **Atomic Operations**: All resources allocated or none (no partial failures)
+- **Consistent State**: Database and infrastructure always in sync
+- **Better Error Handling**: Comprehensive rollback on any failure
+- **Resource Optimization**: Intelligent allocation and capacity management
+- **Enhanced Monitoring**: Detailed provisioning metrics and logging
 
 ## Peer Management Architecture
 

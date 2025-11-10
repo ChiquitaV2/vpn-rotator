@@ -2,6 +2,8 @@ package node
 
 import (
 	"time"
+
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 )
 
 // Node represents a VPN server node domain entity
@@ -23,16 +25,20 @@ type Node struct {
 // NewNode creates a new node with validation
 func NewNode(nodeID, ipAddress, serverPublicKey string, port int) (*Node, error) {
 	if nodeID == "" {
-		return nil, NewValidationError("node_id", "cannot be empty", nodeID)
+		return nil, apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "node_id cannot be empty", false, nil).
+			WithMetadata("field", "node_id")
 	}
 	if ipAddress == "" {
-		return nil, NewValidationError("ip_address", "cannot be empty", ipAddress)
+		return nil, apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "ip_address cannot be empty", false, nil).
+			WithMetadata("field", "ip_address")
 	}
 	if serverPublicKey == "" {
-		return nil, NewValidationError("server_public_key", "cannot be empty", serverPublicKey)
+		return nil, apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "server_public_key cannot be empty", false, nil).
+			WithMetadata("field", "server_public_key")
 	}
 	if port <= 0 || port > 65535 {
-		return nil, NewValidationError("port", "must be between 1 and 65535", port)
+		return nil, apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "port must be between 1 and 65535", false, nil).
+			WithMetadata("field", "port").WithMetadata("value", port)
 	}
 
 	now := time.Now()
@@ -52,11 +58,13 @@ func NewNode(nodeID, ipAddress, serverPublicKey string, port int) (*Node, error)
 // UpdateStatus changes the node status with validation
 func (n *Node) UpdateStatus(newStatus Status) error {
 	if !newStatus.IsValid() {
-		return ErrInvalidStatus
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "invalid node status", false, nil).
+			WithMetadata("status", newStatus)
 	}
 
 	if !n.Status.CanTransitionTo(newStatus) {
-		return ErrInvalidStatusTransition
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "invalid status transition", false, nil).
+			WithMetadata("from", n.Status).WithMetadata("to", newStatus)
 	}
 
 	n.Status = newStatus
@@ -90,7 +98,8 @@ func (n *Node) UpdateLastHandshake(timestamp time.Time) {
 // UpdateConnectedClients updates the connected clients count
 func (n *Node) UpdateConnectedClients(count int) error {
 	if count < 0 {
-		return NewValidationError("connected_clients", "cannot be negative", count)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "connected_clients cannot be negative", false, nil).
+			WithMetadata("value", count)
 	}
 
 	n.ConnectedClients = count
@@ -102,7 +111,8 @@ func (n *Node) UpdateConnectedClients(count int) error {
 // ScheduleDestroy schedules the node for destruction at the specified time
 func (n *Node) ScheduleDestroy(destroyAt time.Time) error {
 	if destroyAt.Before(time.Now()) {
-		return NewValidationError("destroy_at", "cannot be in the past", destroyAt)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "destroy_at cannot be in the past", false, nil).
+			WithMetadata("value", destroyAt)
 	}
 
 	n.DestroyAt = &destroyAt
@@ -114,16 +124,22 @@ func (n *Node) ScheduleDestroy(destroyAt time.Time) error {
 // ValidateCapacity validates if the node can accept additional peers
 func (n *Node) ValidateCapacity(additionalPeers int, maxPeersPerNode int) error {
 	if additionalPeers < 0 {
-		return NewValidationError("additional_peers", "cannot be negative", additionalPeers)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "additional_peers cannot be negative", false, nil).
+			WithMetadata("value", additionalPeers)
 	}
 
 	if !n.CanAcceptPeers() {
-		return ErrNodeNotReady
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeNotReady, "node not ready to accept peers", true, nil).
+			WithMetadata("node_id", n.ID).WithMetadata("status", n.Status)
 	}
 
 	totalPeers := n.ConnectedClients + additionalPeers
 	if totalPeers > maxPeersPerNode {
-		return NewCapacityError(n.ID, n.ConnectedClients, maxPeersPerNode, additionalPeers, true, ErrNodeAtCapacity)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeAtCapacity, "node at capacity", true, nil).
+			WithMetadata("node_id", n.ID).
+			WithMetadata("current", n.ConnectedClients).
+			WithMetadata("max", maxPeersPerNode).
+			WithMetadata("requested", additionalPeers)
 	}
 
 	return nil
@@ -132,10 +148,11 @@ func (n *Node) ValidateCapacity(additionalPeers int, maxPeersPerNode int) error 
 // ValidateForProvisioning validates node data before provisioning
 func (n *Node) ValidateForProvisioning() error {
 	if n.ID == "" {
-		return NewValidationError("id", "cannot be empty", n.ID)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "id cannot be empty", false, nil)
 	}
 	if n.Status != StatusProvisioning {
-		return NewValidationError("status", "must be provisioning", n.Status)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "status must be provisioning", false, nil).
+			WithMetadata("status", n.Status)
 	}
 	return nil
 }
@@ -143,10 +160,13 @@ func (n *Node) ValidateForProvisioning() error {
 // ValidateForDestruction validates node can be safely destroyed
 func (n *Node) ValidateForDestruction() error {
 	if n.ConnectedClients > 0 {
-		return NewValidationError("connected_clients", "cannot destroy node with active peers", n.ConnectedClients)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeConflict, "cannot destroy node with active peers", false, nil).
+			WithMetadata("node_id", n.ID).
+			WithMetadata("connected_clients", n.ConnectedClients)
 	}
 	if n.Status == StatusDestroying {
-		return NewValidationError("status", "node already being destroyed", n.Status)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeConflict, "node already being destroyed", false, nil).
+			WithMetadata("node_id", n.ID)
 	}
 	return nil
 }
@@ -176,16 +196,16 @@ type CreateRequest struct {
 // Validate validates the create request
 func (r *CreateRequest) Validate() error {
 	if r.ServerID == "" {
-		return NewValidationError("server_id", "cannot be empty", r.ServerID)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "server_id cannot be empty", false, nil)
 	}
 	if r.IPAddress == "" {
-		return NewValidationError("ip_address", "cannot be empty", r.IPAddress)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "ip_address cannot be empty", false, nil)
 	}
 	if r.ServerPublicKey == "" {
-		return NewValidationError("server_public_key", "cannot be empty", r.ServerPublicKey)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "server_public_key cannot be empty", false, nil)
 	}
 	if r.Port <= 0 || r.Port > 65535 {
-		return NewValidationError("port", "must be between 1 and 65535", r.Port)
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeValidation, "port must be between 1 and 65535", false, nil)
 	}
 	return nil
 }

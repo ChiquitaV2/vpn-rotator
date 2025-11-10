@@ -18,7 +18,7 @@ type KeyManager struct {
 // NewKeyManager creates a new key manager.
 func NewKeyManager(log *logger.Logger) *KeyManager {
 	if log == nil {
-		log = logger.New("info", "text")
+		log = logger.NewDevelopment("keymanager")
 	}
 
 	return &KeyManager{

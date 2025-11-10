@@ -3,11 +3,11 @@ package api
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // Server represents the HTTP API server with proper lifecycle management.
@@ -16,7 +16,7 @@ type Server struct {
 	vpnService               application.VPNService
 	adminService             application.AdminService
 	provisioningOrchestrator *application.ProvisioningOrchestrator
-	logger                   *slog.Logger
+	logger                   *applogger.Logger // <-- Changed
 	corsOrigins              []string
 }
 
@@ -27,12 +27,18 @@ type ServerConfig struct {
 }
 
 // NewServerWithAsyncProvisioning creates a new API server instance with provisioning orchestrator support.
-func NewServerWithAsyncProvisioning(config ServerConfig, vpnService application.VPNService, adminService application.AdminService, provisioningOrchestrator *application.ProvisioningOrchestrator, logger *slog.Logger) *Server {
+func NewServerWithAsyncProvisioning(
+	config ServerConfig,
+	vpnService application.VPNService,
+	adminService application.AdminService,
+	provisioningOrchestrator *application.ProvisioningOrchestrator,
+	logger *applogger.Logger, // <-- Changed
+) *Server {
 	return &Server{
 		vpnService:               vpnService,
 		adminService:             adminService,
 		provisioningOrchestrator: provisioningOrchestrator,
-		logger:                   logger,
+		logger:                   logger.WithComponent("api.server"), // <-- Scoped logger
 		corsOrigins:              config.CORSOrigins,
 		server: &http.Server{
 			Addr:         config.Address,
@@ -56,6 +62,7 @@ func (s *Server) Start(ctx context.Context) error {
 	errChan := make(chan error, 1)
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			// This error can't be a DomainError, it's a critical failure
 			errChan <- fmt.Errorf("api server failed to start: %w", err)
 		}
 	}()
@@ -63,6 +70,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Check if server started successfully
 	select {
 	case err := <-errChan:
+		s.logger.ErrorCtx(ctx, "API server failed to start", err)
 		return err
 	case <-time.After(100 * time.Millisecond):
 		s.logger.InfoContext(ctx, "API server started successfully", "address", s.server.Addr)
@@ -79,6 +87,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	defer cancel()
 
 	if err := s.server.Shutdown(shutdownCtx); err != nil {
+		s.logger.ErrorCtx(ctx, "API server shutdown failed", err)
 		return fmt.Errorf("api server shutdown failed: %w", err)
 	}
 
@@ -110,11 +119,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc("GET /api/v1/provisioning/status", s.provisioningStatusHandler())
 
 	// Apply middleware chain
+	// Swapped old Logging/ErrorHandling with new integrated versions.
 	handler := Chain(
-		Recovery(s.logger),
-		RequestID,
-		Logging(s.logger),
-		ErrorHandling(s.logger),
+		RequestID(s.logger), // Injects RequestID and Scoped Logger
+		Recovery(),          // Recovers panics, uses logger from context
+		Logging(),           // Logs requests, uses logger from context
 		CORS(s.corsOrigins),
 	)(mux)
 

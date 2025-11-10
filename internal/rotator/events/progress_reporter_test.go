@@ -2,27 +2,26 @@ package events
 
 import (
 	"context"
-	"log/slog"
-	"os"
 	"testing"
 	"time"
 
 	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestEventDrivenArchitecture demonstrates the new event-driven architecture
 func TestEventDrivenArchitecture(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := applogger.NewDevelopment("test") // <-- Changed
 
 	// Create the event system
-	bus := sharedevents.NewGookitEventBus(sharedevents.DefaultEventBusConfig(), logger)
-	eventPublisher := NewEventPublisher(bus)
+	bus := sharedevents.NewGookitEventBus(sharedevents.DefaultEventBusConfig(), logger) // <-- Changed
+	eventPublisher := NewEventPublisher(bus, logger)                                    // <-- Changed
 	defer bus.Close()
 
 	// Create the centralized state tracker
-	stateTracker := NewNodeStateTracker(eventPublisher.Provisioning)
+	stateTracker := NewNodeStateTracker(eventPublisher.Provisioning, logger) // <-- Changed
 	defer stateTracker.Stop()
 
 	ctx := context.Background()
@@ -32,17 +31,17 @@ func TestEventDrivenArchitecture(t *testing.T) {
 	err := eventPublisher.Provisioning.PublishProvisionRequested(ctx, "request-123", "test-source")
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Nanosecond) // Allow events to process
+	time.Sleep(10 * time.Millisecond) // Allow events to process
 
 	err = eventPublisher.Provisioning.PublishProvisionProgress(ctx, nodeID, "installing", 0.5, "Installing packages", nil)
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Nanosecond)
+	time.Sleep(10 * time.Millisecond)
 
 	err = eventPublisher.Provisioning.PublishProvisionCompleted(ctx, nodeID, "server-456", "192.168.1.100", time.Minute*2)
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Nanosecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Verify state tracker received and processed the events
 	state := stateTracker.GetNodeState(nodeID)
@@ -55,12 +54,12 @@ func TestEventDrivenArchitecture(t *testing.T) {
 
 // TestNodeStateTracker tests the centralized state management
 func TestNodeStateTracker(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	bus := sharedevents.NewGookitEventBus(sharedevents.DefaultEventBusConfig(), logger)
-	eventPublisher := NewEventPublisher(bus)
+	logger := applogger.NewDevelopment("test")                                          // <-- Changed
+	bus := sharedevents.NewGookitEventBus(sharedevents.DefaultEventBusConfig(), logger) // <-- Changed
+	eventPublisher := NewEventPublisher(bus, logger)                                    // <-- Changed
 	defer bus.Close()
 
-	stateTracker := NewNodeStateTracker(eventPublisher.Provisioning)
+	stateTracker := NewNodeStateTracker(eventPublisher.Provisioning, logger) // <-- Changed
 	defer stateTracker.Stop()
 
 	ctx := context.Background()
@@ -74,7 +73,7 @@ func TestNodeStateTracker(t *testing.T) {
 	err := eventPublisher.Provisioning.PublishProvisionProgress(ctx, nodeID, "validation", 0.2, "Validating input", nil)
 	require.NoError(t, err)
 
-	time.Sleep(10 * time.Nanosecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Should now be provisioning
 	assert.True(t, stateTracker.IsProvisioning())

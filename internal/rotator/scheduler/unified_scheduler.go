@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // UnifiedScheduler handles both rotation and cleanup operations using a VPN service
@@ -12,7 +14,7 @@ type UnifiedScheduler struct {
 	cleanupInterval  time.Duration
 	cleanupAge       time.Duration
 	vpnService       VPNService
-	logger           *slog.Logger
+	logger           *applogger.Logger
 
 	// Internal state
 	rotationTicker *time.Ticker
@@ -27,14 +29,14 @@ func NewUnifiedScheduler(
 	cleanupInterval time.Duration,
 	cleanupAge time.Duration,
 	vpnService VPNService,
-	logger *slog.Logger,
+	logger *applogger.Logger, // <-- Changed
 ) *UnifiedScheduler {
 	return &UnifiedScheduler{
 		rotationInterval: rotationInterval,
 		cleanupInterval:  cleanupInterval,
 		cleanupAge:       cleanupAge,
 		vpnService:       vpnService,
-		logger:           logger,
+		logger:           logger.WithComponent("scheduler.unified"),
 		stopChan:         make(chan struct{}),
 	}
 }
@@ -42,11 +44,11 @@ func NewUnifiedScheduler(
 // Start begins both rotation and cleanup scheduling loops
 func (s *UnifiedScheduler) Start(ctx context.Context) error {
 	if s.running {
-		s.logger.Warn("unified scheduler is already running")
+		s.logger.WarnContext(ctx, "unified scheduler is already running")
 		return nil
 	}
 
-	s.logger.Info("starting unified scheduler",
+	s.logger.InfoContext(ctx, "starting unified scheduler",
 		slog.Duration("rotation_interval", s.rotationInterval),
 		slog.Duration("cleanup_interval", s.cleanupInterval),
 		slog.Duration("cleanup_age", s.cleanupAge))
@@ -64,18 +66,18 @@ func (s *UnifiedScheduler) Start(ctx context.Context) error {
 	go s.performRotationCheck(ctx)
 	go s.performCleanupCheck(ctx)
 
-	s.logger.Info("unified scheduler started successfully")
+	s.logger.InfoContext(ctx, "unified scheduler started successfully")
 	return nil
 }
 
 // Stop gracefully shuts down the scheduler
 func (s *UnifiedScheduler) Stop(ctx context.Context) error {
 	if !s.running {
-		s.logger.Warn("unified scheduler is not running")
+		s.logger.WarnContext(ctx, "unified scheduler is not running")
 		return nil
 	}
 
-	s.logger.Info("stopping unified scheduler")
+	s.logger.InfoContext(ctx, "stopping unified scheduler")
 
 	// Stop tickers
 	if s.rotationTicker != nil {
@@ -89,7 +91,7 @@ func (s *UnifiedScheduler) Stop(ctx context.Context) error {
 	close(s.stopChan)
 	s.running = false
 
-	s.logger.Info("unified scheduler stopped successfully")
+	s.logger.InfoContext(ctx, "unified scheduler stopped successfully")
 	return nil
 }
 
@@ -112,11 +114,11 @@ func (s *UnifiedScheduler) schedulingLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.logger.Info("unified scheduler stopping due to context cancellation")
+			s.logger.InfoContext(ctx, "unified scheduler stopping due to context cancellation")
 			return
 
 		case <-s.stopChan:
-			s.logger.Info("unified scheduler stopping due to stop signal")
+			s.logger.InfoContext(ctx, "unified scheduler stopping due to stop signal")
 			return
 
 		case <-s.rotationTicker.C:
@@ -130,38 +132,32 @@ func (s *UnifiedScheduler) schedulingLoop(ctx context.Context) {
 
 // performRotationCheck performs a single rotation check and initiates rotation if needed
 func (s *UnifiedScheduler) performRotationCheck(ctx context.Context) {
-	s.logger.Debug("performing rotation check")
+	op := s.logger.StartOp(ctx, "perform_rotation_check")
 
-	startTime := time.Now()
 	err := s.vpnService.RotateNodes(ctx)
-	duration := time.Since(startTime)
 
 	if err != nil {
-		s.logger.Error("rotation check failed",
-			slog.String("error", err.Error()),
-			slog.Duration("duration", duration))
+		// Log the domain error from the vpnService
+		s.logger.ErrorCtx(ctx, "rotation check failed", err)
+		op.Fail(err, "rotation check failed")
 		return
 	}
 
-	s.logger.Info("rotation check completed successfully",
-		slog.Duration("duration", duration))
+	op.Complete("rotation check completed")
 }
 
 // performCleanupCheck performs a single cleanup operation
 func (s *UnifiedScheduler) performCleanupCheck(ctx context.Context) {
-	s.logger.Debug("performing cleanup check")
+	op := s.logger.StartOp(ctx, "perform_cleanup_check")
 
-	startTime := time.Now()
 	err := s.vpnService.CleanupInactiveResources(ctx)
-	duration := time.Since(startTime)
 
 	if err != nil {
-		s.logger.Error("cleanup check failed",
-			slog.String("error", err.Error()),
-			slog.Duration("duration", duration))
+		// Log the domain error from the vpnService
+		s.logger.ErrorCtx(ctx, "cleanup check failed", err)
+		op.Fail(err, "cleanup check failed")
 		return
 	}
 
-	s.logger.Info("cleanup check completed successfully",
-		slog.Duration("duration", duration))
+	op.Complete("cleanup check completed")
 }

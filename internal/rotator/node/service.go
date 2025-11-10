@@ -2,11 +2,12 @@ package node
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // Service implements the NodeService interface with domain business logic
@@ -15,7 +16,7 @@ type Service struct {
 	cloudProvisioner CloudProvisioner
 	healthChecker    nodeinteractor.HealthChecker
 	wireguardManager nodeinteractor.WireGuardManager
-	logger           *slog.Logger
+	logger           *applogger.Logger // <-- Changed
 	config           ServiceConfig
 }
 
@@ -35,7 +36,7 @@ func NewService(
 	cloudProvisioner CloudProvisioner,
 	healthChecker nodeinteractor.HealthChecker,
 	wireguardManager nodeinteractor.WireGuardManager,
-	logger *slog.Logger,
+	logger *applogger.Logger, // <-- Changed
 	config ServiceConfig,
 ) *Service {
 	return &Service{
@@ -43,72 +44,84 @@ func NewService(
 		cloudProvisioner: cloudProvisioner,
 		healthChecker:    healthChecker,
 		wireguardManager: wireguardManager,
-		logger:           logger,
+		logger:           logger.WithComponent("node.service"), // <-- Scoped logger
 		config:           config,
 	}
 }
 
 // DestroyNode destroys a node with proper cleanup and validation
 func (s *Service) DestroyNode(ctx context.Context, nodeID string) error {
-	s.logger.Info("destroying node", slog.String("node_id", nodeID))
+	op := s.logger.StartOp(ctx, "DestroyNode", slog.String("node_id", nodeID))
 
 	// Get node from repository
 	node, err := s.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to get node", err)
+		op.Fail(err, "failed to get node")
+		return err // Repo returns DomainError
 	}
 
 	// Validate node can be destroyed
 	if err := node.ValidateForDestruction(); err != nil {
-		return fmt.Errorf("node validation failed: %w", err)
+		s.logger.ErrorCtx(ctx, "node validation failed", err)
+		op.Fail(err, "node validation failed")
+		return err // Model returns DomainError
 	}
 
 	// Update status to destroying to prevent race conditions
 	if err := node.UpdateStatus(StatusDestroying); err != nil {
-		return fmt.Errorf("failed to update node status: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to update node status", err)
+		op.Fail(err, "failed to update node status")
+		return err // Model returns DomainError
 	}
 
 	if err := s.repository.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to update node status: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to save destroying status", err)
+		op.Fail(err, "failed to save destroying status")
+		return err // Repo returns DomainError
 	}
-
-	// Note: The application layer is responsible for ensuring peers are migrated
-	// before calling DestroyNode. The domain service assumes this precondition is met.
 
 	// Destroy cloud infrastructure if server ID exists
 	if node.ServerID != "" {
 		if err := s.cloudProvisioner.DestroyNode(ctx, node.ServerID); err != nil {
-			s.logger.Error("failed to destroy cloud infrastructure",
-				slog.String("node_id", nodeID),
-				slog.String("server_id", node.ServerID),
-				slog.String("error", err.Error()))
-			// Continue with database cleanup even if cloud destruction fails
+			// This is a major error, but we must continue to delete the DB record.
+			s.logger.ErrorCtx(ctx, "failed to destroy cloud infrastructure, continuing with db delete", err,
+				slog.String("server_id", node.ServerID))
+			// Do not return yet, must delete DB record.
 		}
 	}
 
 	// Remove from repository
 	if err := s.repository.Delete(ctx, nodeID); err != nil {
-		return fmt.Errorf("failed to delete node from repository: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to delete node from repository", err)
+		op.Fail(err, "failed to delete node from repository")
+		return err // Repo returns DomainError
 	}
 
-	s.logger.Info("successfully destroyed node", slog.String("node_id", nodeID))
+	op.Complete("node destroyed successfully")
 	return nil
 }
 
 // CheckNodeHealth checks node health using NodeInteractor
 func (s *Service) CheckNodeHealth(ctx context.Context, nodeID string) (*Health, error) {
-	s.logger.Debug("checking node health", slog.String("node_id", nodeID))
+	op := s.logger.StartOp(ctx, "CheckNodeHealth", slog.String("node_id", nodeID))
 
 	// Get node from repository
 	node, err := s.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to get node", err)
+		op.Fail(err, "failed to get node")
+		return nil, err
 	}
 
 	// Use NodeInteractor for health check
 	healthStatus, err := s.healthChecker.CheckNodeHealth(ctx, node.IPAddress)
 	if err != nil {
-		return nil, NewHealthCheckError(nodeID, "comprehensive", err)
+		domainErr := apperrors.NewInfrastructureError(apperrors.ErrCodeHealthCheckFailed, "comprehensive health check failed", true, err).
+			WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "health check interactor failed", domainErr)
+		op.Fail(domainErr, "health check interactor failed")
+		return nil, domainErr
 	}
 
 	// Convert NodeInteractor health status to domain Health
@@ -135,73 +148,88 @@ func (s *Service) CheckNodeHealth(ctx context.Context, nodeID string) (*Health, 
 
 	if node.Status != newStatus {
 		if err := s.UpdateNodeStatus(ctx, nodeID, newStatus); err != nil {
-			s.logger.Warn("failed to update node status based on health",
-				slog.String("node_id", nodeID),
-				slog.String("new_status", string(newStatus)),
-				slog.String("error", err.Error()))
+			// Log as error, but don't fail the health check itself
+			s.logger.ErrorCtx(ctx, "failed to update node status based on health", err,
+				slog.String("new_status", string(newStatus)))
 		}
 	}
 
+	op.Complete("node health check completed", slog.Bool("is_healthy", health.IsHealthy))
 	return health, nil
 }
 
 // UpdateNodeStatus updates node status with validation
 func (s *Service) UpdateNodeStatus(ctx context.Context, nodeID string, status Status) error {
-	s.logger.Debug("updating node status",
+	op := s.logger.StartOp(ctx, "UpdateNodeStatus",
 		slog.String("node_id", nodeID),
-		slog.String("status", string(status)))
+		slog.String("new_status", status.String()))
 
 	// Get node from repository
 	node, err := s.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to get node", err)
+		op.Fail(err, "failed to get node")
+		return err
 	}
 
 	// Update status with validation
 	if err := node.UpdateStatus(status); err != nil {
-		return fmt.Errorf("failed to update node status: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to update node status", err)
+		op.Fail(err, "failed to update node status")
+		return err
 	}
 
 	// Save to repository
 	if err := s.repository.Update(ctx, node); err != nil {
-		return fmt.Errorf("failed to save node: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to save node", err)
+		op.Fail(err, "failed to save node")
+		return err
 	}
 
-	s.logger.Info("successfully updated node status",
-		slog.String("node_id", nodeID),
-		slog.String("status", string(status)))
-
+	op.Complete("node status updated successfully")
 	return nil
 }
 
 // ValidateNodeCapacity validates if node can accept additional peers
 func (s *Service) ValidateNodeCapacity(ctx context.Context, nodeID string, additionalPeers int) error {
-	s.logger.Debug("validating node capacity",
+	op := s.logger.StartOp(ctx, "ValidateNodeCapacity",
 		slog.String("node_id", nodeID),
 		slog.Int("additional_peers", additionalPeers))
 
 	// Get node from repository
 	node, err := s.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to get node", err)
+		op.Fail(err, "failed to get node")
+		return err
 	}
 
 	// Validate capacity using node entity
 	if err := node.ValidateCapacity(additionalPeers, s.config.MaxPeersPerNode); err != nil {
-		return err
+		s.logger.ErrorCtx(ctx, "node capacity validation failed", err)
+		op.Fail(err, "node capacity validation failed")
+		return err // Returns DomainError
 	}
 
 	// Check capacity threshold
 	if node.IsOverCapacityThreshold(s.config.MaxPeersPerNode, s.config.CapacityThreshold) {
-		return NewCapacityError(nodeID, node.ConnectedClients, s.config.MaxPeersPerNode, additionalPeers, true, ErrNodeAtCapacity)
+		err := apperrors.NewNodeError(apperrors.ErrCodeNodeAtCapacity, "node is over capacity threshold", true, nil).
+			WithMetadata("node_id", nodeID).
+			WithMetadata("current", node.ConnectedClients).
+			WithMetadata("threshold_pct", s.config.CapacityThreshold)
+		s.logger.WarnContext(ctx, "node over capacity threshold", slog.String("node_id", nodeID))
+		op.Fail(err, "node over capacity threshold")
+		return err
 	}
 
+	op.Complete("node capacity validation completed")
 	return nil
 }
 
 // SelectOptimalNode selects the best node based on configured strategy
 func (s *Service) SelectOptimalNode(ctx context.Context, filters Filters) (*Node, error) {
-	s.logger.Debug("selecting optimal node", slog.String("strategy", s.config.OptimalNodeSelection))
+	op := s.logger.StartOp(ctx, "SelectOptimalNode",
+		slog.String("strategy", s.config.OptimalNodeSelection))
 
 	// Get active nodes
 	activeFilters := filters
@@ -210,11 +238,16 @@ func (s *Service) SelectOptimalNode(ctx context.Context, filters Filters) (*Node
 
 	nodes, err := s.repository.List(ctx, activeFilters)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list nodes: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to list nodes", err)
+		op.Fail(err, "failed to list nodes")
+		return nil, err
 	}
 
 	if len(nodes) == 0 {
-		return nil, ErrNodeNotFound
+		err := apperrors.NewNodeError(apperrors.ErrCodeNodeNotFound, "no active nodes found", true, nil)
+		s.logger.WarnContext(ctx, "no active nodes found to select from")
+		op.Fail(err, "no active nodes found to select from")
+		return nil, err
 	}
 
 	// Filter nodes that can accept peers
@@ -222,78 +255,102 @@ func (s *Service) SelectOptimalNode(ctx context.Context, filters Filters) (*Node
 	for _, node := range nodes {
 		if err := s.ValidateNodeCapacity(ctx, node.ID, 1); err == nil {
 			availableNodes = append(availableNodes, node)
+		} else {
+			s.logger.WarnContext(ctx, "node skipped (at capacity)", slog.String("node_id", node.ID))
 		}
 	}
 
 	if len(availableNodes) == 0 {
-		return nil, ErrNodeAtCapacity
+		err := apperrors.NewNodeError(apperrors.ErrCodeNodeAtCapacity, "no available nodes with capacity", true, nil)
+		s.logger.WarnContext(ctx, "no active nodes found with available capacity")
+		op.Fail(err, "no available nodes found with available capacity")
+		return nil, err
 	}
 
 	// Select based on strategy
+	var selectedNode *Node
 	switch s.config.OptimalNodeSelection {
 	case "least_loaded":
-		return s.selectLeastLoadedNode(availableNodes), nil
+		selectedNode = s.selectLeastLoadedNode(availableNodes)
 	case "round_robin":
-		return s.selectRoundRobinNode(availableNodes), nil
+		selectedNode = s.selectRoundRobinNode(availableNodes)
 	case "random":
-		return s.selectRandomNode(availableNodes), nil
+		selectedNode = s.selectRandomNode(availableNodes)
 	default:
-		return s.selectLeastLoadedNode(availableNodes), nil
+		selectedNode = s.selectLeastLoadedNode(availableNodes)
 	}
+
+	op.Complete("node selected successfully", slog.String("selected_node_id", selectedNode.ID))
+	return selectedNode, nil
 }
 
 // GetNodePublicKey retrieves node's WireGuard public key using NodeInteractor
 func (s *Service) GetNodePublicKey(ctx context.Context, nodeID string) (string, error) {
-	s.logger.Debug("getting node public key", slog.String("node_id", nodeID))
+	op := s.logger.StartOp(ctx, "GetNodePublicKey", slog.String("node_id", nodeID))
 
 	// Get node from repository
 	node, err := s.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get node: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to get node", err)
+		op.Fail(err, "failed to get node")
+		return "", err
 	}
 
 	// Get WireGuard status using NodeInteractor
 	wgStatus, err := s.wireguardManager.GetWireGuardStatus(ctx, node.IPAddress)
 	if err != nil {
-		return "", fmt.Errorf("failed to get WireGuard status: %w", err)
+		domainErr := apperrors.WrapWithDomain(err, apperrors.DomainInfrastructure, "wg_status_failed", "failed to get WireGuard status", true)
+		s.logger.ErrorCtx(ctx, "failed to get wg status", domainErr)
+		op.Fail(domainErr, "failed to get wg status")
+		return "", domainErr
 	}
 
+	op.Complete("node public key retrieved successfully")
 	return wgStatus.PublicKey, nil
 }
 
 // GetNodeStatistics retrieves node statistics from repository
 func (s *Service) GetNodeStatistics(ctx context.Context) (*Statistics, error) {
-	s.logger.Debug("getting node statistics")
+	op := s.logger.StartOp(ctx, "GetNodeStatistics")
 
 	stats, err := s.repository.GetStatistics(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get statistics: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to get statistics", err)
+		op.Fail(err, "failed to get statistics")
+		return nil, err // Repo returns DomainError
 	}
 
+	op.Complete("node statistics retrieved successfully")
 	return stats, nil
 }
 
 // ListNodes lists nodes with filters
 func (s *Service) ListNodes(ctx context.Context, filters Filters) ([]*Node, error) {
-	s.logger.Debug("listing nodes")
+	op := s.logger.StartOp(ctx, "ListNodes")
 
 	nodes, err := s.repository.List(ctx, filters)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list nodes: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to list nodes", err)
+		op.Fail(err, "failed to list nodes")
+		return nil, err // Repo returns DomainError
 	}
 
+	op.Complete("nodes listed successfully", slog.Int("count", len(nodes)))
 	return nodes, nil
 }
 
 // GetNode retrieves a single node by ID
 func (s *Service) GetNode(ctx context.Context, nodeID string) (*Node, error) {
-	s.logger.Debug("getting node", slog.String("node_id", nodeID))
+	op := s.logger.StartOp(ctx, "GetNode", slog.String("node_id", nodeID))
 
 	node, err := s.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node: %w", err)
+		s.logger.ErrorCtx(ctx, "failed to get node", err)
+		op.Fail(err, "failed to get node")
+		return nil, err // Repo returns DomainError
 	}
 
+	op.Complete("node retrieved successfully")
 	return node, nil
 }
 
@@ -303,12 +360,14 @@ func (s *Service) GetNode(ctx context.Context, nodeID string) (*Node, error) {
 func (s *Service) checkNodeConflicts(ctx context.Context, node *Node) error {
 	// Check server ID conflict
 	if existingNode, err := s.repository.GetByServerID(ctx, node.ServerID); err == nil && existingNode != nil {
-		return NewConflictError("server_id", node.ServerID, "server ID already in use")
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeConflict, "server ID already in use", false, nil).
+			WithMetadata("server_id", node.ServerID)
 	}
 
 	// Check IP address conflict
 	if existingNode, err := s.repository.GetByIPAddress(ctx, node.IPAddress); err == nil && existingNode != nil {
-		return NewConflictError("ip_address", node.IPAddress, "IP address already in use")
+		return apperrors.NewNodeError(apperrors.ErrCodeNodeConflict, "IP address already in use", false, nil).
+			WithMetadata("ip_address", node.IPAddress)
 	}
 
 	return nil

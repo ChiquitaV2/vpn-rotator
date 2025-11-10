@@ -1,9 +1,11 @@
 package nodeinteractor
 
 import (
-	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // OperationMetrics tracks metrics for NodeInteractor operations
@@ -46,19 +48,19 @@ type ConnectionHealthMetrics struct {
 type MetricsCollector struct {
 	operationMetrics  *OperationMetrics
 	connectionMetrics map[string]*ConnectionHealthMetrics
-	logger            *slog.Logger
+	logger            *logger.Logger
 	mutex             sync.RWMutex
 }
 
 // NewMetricsCollector creates a new metrics collector
-func NewMetricsCollector(logger *slog.Logger) *MetricsCollector {
+func NewMetricsCollector(log *logger.Logger) *MetricsCollector {
 	return &MetricsCollector{
 		operationMetrics: &OperationMetrics{
 			OperationsByType: make(map[string]OperationTypeMetrics),
 			ErrorsByType:     make(map[string]int64),
 		},
 		connectionMetrics: make(map[string]*ConnectionHealthMetrics),
-		logger:            logger,
+		logger:            log.WithComponent("metrics.collector"),
 	}
 }
 
@@ -78,7 +80,7 @@ func (mc *MetricsCollector) RecordOperation(operationType string, duration time.
 		mc.operationMetrics.FailedOps++
 
 		// Record error type
-		errorType := getErrorType(err)
+		errorType := errors.GetErrorCode(err)
 		mc.operationMetrics.ErrorsByType[errorType]++
 	}
 
@@ -203,43 +205,5 @@ func (mc *MetricsCollector) ResetMetrics() {
 	}
 	mc.connectionMetrics = make(map[string]*ConnectionHealthMetrics)
 
-	mc.logger.Info("metrics reset")
-}
-
-// getErrorType extracts error type from error for categorization
-func getErrorType(err error) string {
-	if err == nil {
-		return "none"
-	}
-
-	switch err.(type) {
-	case *SSHConnectionError:
-		return "ssh_connection"
-	case *SSHTimeoutError:
-		return "ssh_timeout"
-	case *SSHCommandError:
-		return "ssh_command"
-	case *WireGuardOperationError:
-		return "wireguard_operation"
-	case *WireGuardConfigError:
-		return "wireguard_config"
-	case *HealthCheckError:
-		return "health_check"
-	case *SystemInfoError:
-		return "system_info"
-	case *FileOperationError:
-		return "file_operation"
-	case *CircuitBreakerError:
-		return "circuit_breaker"
-	case *ValidationError:
-		return "validation"
-	case *PeerNotFoundError:
-		return "peer_not_found"
-	case *PeerAlreadyExistsError:
-		return "peer_already_exists"
-	case *IPConflictError:
-		return "ip_conflict"
-	default:
-		return "unknown"
-	}
+	mc.logger.Debug("metrics reset")
 }

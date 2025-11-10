@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
+	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 )
 
 // NetworkConfig defines the network configuration for IP allocation
@@ -36,28 +37,28 @@ func DefaultNetworkConfig() *NetworkConfig {
 func (c *NetworkConfig) Validate() error {
 	// Validate base network
 	if err := ValidateCIDR(c.BaseNetwork); err != nil {
-		return fmt.Errorf("invalid base network: %w", err)
+		return sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "invalid base network", false, err).WithMetadata("base_network", c.BaseNetwork)
 	}
 
 	// Parse base network to validate structure
 	_, baseNet, err := net.ParseCIDR(c.BaseNetwork)
 	if err != nil {
-		return fmt.Errorf("failed to parse base network: %w", err)
+		return sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "failed to parse base network", false, err).WithMetadata("base_network", c.BaseNetwork)
 	}
 
 	// Validate subnet mask
 	baseOnes, _ := baseNet.Mask.Size()
 	if c.SubnetMask <= baseOnes {
-		return fmt.Errorf("subnet mask /%d must be larger than base network mask /%d", c.SubnetMask, baseOnes)
+		return sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, fmt.Sprintf("subnet mask /%d must be larger than base network mask /%d", c.SubnetMask, baseOnes), false, nil).WithMetadata("subnet_mask", c.SubnetMask).WithMetadata("base_network_mask", baseOnes)
 	}
 
 	if c.SubnetMask > 30 {
-		return fmt.Errorf("subnet mask /%d is too restrictive (max /30)", c.SubnetMask)
+		return sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, fmt.Sprintf("subnet mask /%d is too restrictive (max /30)", c.SubnetMask), false, nil).WithMetadata("subnet_mask", c.SubnetMask)
 	}
 
 	// Validate capacity threshold
 	if c.CapacityThreshold <= 0 || c.CapacityThreshold > 1.0 {
-		return fmt.Errorf("capacity threshold must be between 0.0 and 1.0, got %.2f", c.CapacityThreshold)
+		return sharedErrors.NewIPError(sharedErrors.ErrCodeConfiguration, fmt.Sprintf("capacity threshold must be between 0.0 and 1.0, got %.2f", c.CapacityThreshold), false, nil).WithMetadata("capacity_threshold", c.CapacityThreshold)
 	}
 
 	return nil
@@ -67,7 +68,7 @@ func (c *NetworkConfig) Validate() error {
 func (c *NetworkConfig) ParsedBaseNetwork() (*net.IPNet, error) {
 	_, network, err := net.ParseCIDR(c.BaseNetwork)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse base network: %w", err)
+		return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "failed to parse base network", false, err).WithMetadata("base_network", c.BaseNetwork)
 	}
 	return network, nil
 }
@@ -84,14 +85,14 @@ func (c *NetworkConfig) MaxSubnets() int {
 func (c *NetworkConfig) GenerateSubnetCIDR(index int) (string, error) {
 	baseIP, baseNet, err := net.ParseCIDR(c.BaseNetwork)
 	if err != nil {
-		return "", fmt.Errorf("invalid base network: %w", err)
+		return "", sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "invalid base network", false, err).WithMetadata("base_network", c.BaseNetwork)
 	}
 
 	baseOnes, _ := baseNet.Mask.Size()
 	subnetBits := c.SubnetMask - baseOnes
 
 	if index >= int(math.Pow(2, float64(subnetBits))) {
-		return "", fmt.Errorf("subnet index %d exceeds maximum %d", index, int(math.Pow(2, float64(subnetBits)))-1)
+		return "", sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, fmt.Sprintf("subnet index %d exceeds maximum %d", index, int(math.Pow(2, float64(subnetBits)))-1), false, nil).WithMetadata("index", index).WithMetadata("max_subnets", int(math.Pow(2, float64(subnetBits)))-1)
 	}
 
 	// Calculate subnet IP

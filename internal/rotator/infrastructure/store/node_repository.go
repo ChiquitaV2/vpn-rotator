@@ -4,25 +4,32 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // nodeRepository implements node.NodeRepository using db.Store
 type nodeRepository struct {
-	store db.Store
+	store  db.Store
+	logger *applogger.Logger
 }
 
 // NewNodeRepository creates a new node repository
-func NewNodeRepository(store db.Store) node.NodeRepository {
+func NewNodeRepository(store db.Store, log *applogger.Logger) node.NodeRepository {
 	return &nodeRepository{
-		store: store,
+		store:  store,
+		logger: log.WithComponent("node.repository"), // Scope logger to this component
 	}
 }
 
 // Create creates a new node in the database
 func (r *nodeRepository) Create(ctx context.Context, n *node.Node) error {
+	start := time.Now()
 	params := db.CreateNodeParams{
 		ID:              n.ID,
 		IpAddress:       n.IPAddress,
@@ -32,8 +39,10 @@ func (r *nodeRepository) Create(ctx context.Context, n *node.Node) error {
 	}
 
 	dbNode, err := r.store.CreateNode(ctx, params)
+	r.logger.DBQuery(ctx, "CreateNode", "nodes", time.Since(start), slog.String("node_id", n.ID))
 	if err != nil {
-		return fmt.Errorf("failed to create node in database: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to create node in database", err, slog.String("node_id", n.ID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to create node in database", true, err)
 	}
 
 	// Update the node with database-generated fields
@@ -46,12 +55,16 @@ func (r *nodeRepository) Create(ctx context.Context, n *node.Node) error {
 
 // GetByID retrieves a node by ID
 func (r *nodeRepository) GetByID(ctx context.Context, nodeID string) (*node.Node, error) {
+	start := time.Now()
 	dbNode, err := r.store.GetNode(ctx, nodeID)
+	r.logger.DBQuery(ctx, "GetNode", "nodes", time.Since(start), slog.String("node_id", nodeID))
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, node.ErrNodeNotFound
+			return nil, apperrors.NewNodeError(apperrors.ErrCodeNodeNotFound, fmt.Sprintf("node %s not found", nodeID), false, err)
 		}
-		return nil, fmt.Errorf("failed to get node from database: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get node from database", err, slog.String("node_id", nodeID))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get node from database", true, err)
 	}
 
 	return r.toDomainNode(&dbNode)
@@ -59,7 +72,7 @@ func (r *nodeRepository) GetByID(ctx context.Context, nodeID string) (*node.Node
 
 // Update updates an existing node
 func (r *nodeRepository) Update(ctx context.Context, n *node.Node) error {
-	// Update status with optimistic locking
+	start := time.Now()
 	err := r.store.UpdateNodeDetails(ctx, db.UpdateNodeDetailsParams{
 		ServerID:        sql.NullString{String: n.ServerID, Valid: n.ServerID != ""},
 		IpAddress:       n.IPAddress,
@@ -67,30 +80,31 @@ func (r *nodeRepository) Update(ctx context.Context, n *node.Node) error {
 		Status:          string(n.Status),
 		ID:              n.ID,
 	})
+	r.logger.DBQuery(ctx, "UpdateNodeDetails", "nodes", time.Since(start), slog.String("node_id", n.ID))
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return node.ErrConcurrentModification
+			return apperrors.NewNodeError(apperrors.ErrCodeNodeConflict, "failed to update node, concurrent modification or not found", false, err)
 		}
-		return fmt.Errorf("failed to update node: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to update node details", err, slog.String("node_id", n.ID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to update node details", true, err)
 	}
 
-	// Update activity if needed
 	if n.LastHandshakeAt != nil || n.ConnectedClients > 0 {
 		handshake := sql.NullTime{}
 		if n.LastHandshakeAt != nil {
-			handshake = sql.NullTime{
-				Time:  *n.LastHandshakeAt,
-				Valid: true,
-			}
+			handshake = sql.NullTime{Time: *n.LastHandshakeAt, Valid: true}
 		}
-
+		start = time.Now()
 		err = r.store.UpdateNodeActivity(ctx, db.UpdateNodeActivityParams{
 			LastHandshakeAt:  handshake,
 			ConnectedClients: int64(n.ConnectedClients),
 			ID:               n.ID,
 		})
+		r.logger.DBQuery(ctx, "UpdateNodeActivity", "nodes", time.Since(start), slog.String("node_id", n.ID))
 		if err != nil {
-			return fmt.Errorf("failed to update node activity: %w", err)
+			r.logger.ErrorCtx(ctx, "failed to update node activity", err, slog.String("node_id", n.ID))
+			return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to update node activity", true, err)
 		}
 	}
 
@@ -99,19 +113,22 @@ func (r *nodeRepository) Update(ctx context.Context, n *node.Node) error {
 
 // Delete deletes a node
 func (r *nodeRepository) Delete(ctx context.Context, nodeID string) error {
+	start := time.Now()
 	err := r.store.DeleteNode(ctx, nodeID)
+	r.logger.DBQuery(ctx, "DeleteNode", "nodes", time.Since(start), slog.String("node_id", nodeID))
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return node.ErrNodeNotFound
+			return apperrors.NewNodeError(apperrors.ErrCodeNodeNotFound, fmt.Sprintf("node %s not found for deletion", nodeID), false, err)
 		}
-		return fmt.Errorf("failed to delete node: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to delete node", err, slog.String("node_id", nodeID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to delete node", true, err)
 	}
-
 	return nil
 }
 
 // List lists nodes with filters
 func (r *nodeRepository) List(ctx context.Context, filters node.Filters) ([]*node.Node, error) {
+	start := time.Now()
 	var dbNodes []db.Node
 	var err error
 
@@ -120,33 +137,35 @@ func (r *nodeRepository) List(ctx context.Context, filters node.Filters) ([]*nod
 	} else {
 		dbNodes, err = r.store.GetAllNodes(ctx)
 	}
+	r.logger.DBQuery(ctx, "ListNodes", "nodes", time.Since(start), slog.Any("filters", filters))
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to list nodes: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to list nodes", err, slog.Any("filters", filters))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to list nodes", true, err)
 	}
 
-	// Convert to domain nodes
 	nodes := make([]*node.Node, 0, len(dbNodes))
 	for i := range dbNodes {
 		domainNode, err := r.toDomainNode(&dbNodes[i])
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert node: %w", err)
+			return nil, apperrors.NewSystemError(apperrors.ErrCodeInternal, "failed to convert db node to domain node", false, err)
 		}
 		nodes = append(nodes, domainNode)
 	}
 
-	// Apply additional filters
 	nodes = r.applyFilters(nodes, filters)
-
 	return nodes, nil
 }
 
 // GetByServerID retrieves a node by server ID
 func (r *nodeRepository) GetByServerID(ctx context.Context, serverID string) (*node.Node, error) {
-	// Get all nodes and filter by server ID (no direct query available)
+	start := time.Now()
 	dbNodes, err := r.store.GetAllNodes(ctx)
+	r.logger.DBQuery(ctx, "GetAllNodes", "nodes", time.Since(start), slog.String("lookup_server_id", serverID))
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get nodes: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get nodes for server ID lookup", err, slog.String("server_id", serverID))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get nodes for server ID lookup", true, err)
 	}
 
 	for i := range dbNodes {
@@ -155,17 +174,21 @@ func (r *nodeRepository) GetByServerID(ctx context.Context, serverID string) (*n
 		}
 	}
 
-	return nil, node.ErrNodeNotFound
+	return nil, apperrors.NewNodeError(apperrors.ErrCodeNodeNotFound, fmt.Sprintf("node with server ID %s not found", serverID), false, nil)
 }
 
 // GetByIPAddress retrieves a node by IP address
 func (r *nodeRepository) GetByIPAddress(ctx context.Context, ipAddress string) (*node.Node, error) {
+	start := time.Now()
 	dbNode, err := r.store.GetNodeByIP(ctx, ipAddress)
+	r.logger.DBQuery(ctx, "GetNodeByIP", "nodes", time.Since(start), slog.String("ip_address", ipAddress))
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, node.ErrNodeNotFound
+			return nil, apperrors.NewNodeError(apperrors.ErrCodeNodeNotFound, fmt.Sprintf("node with IP %s not found", ipAddress), false, err)
 		}
-		return nil, fmt.Errorf("failed to get node by IP: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get node by IP", err, slog.String("ip_address", ipAddress))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get node by IP", true, err)
 	}
 
 	return r.toDomainNode(&dbNode)
@@ -173,92 +196,94 @@ func (r *nodeRepository) GetByIPAddress(ctx context.Context, ipAddress string) (
 
 // UpdateStatus updates node status with optimistic locking
 func (r *nodeRepository) UpdateStatus(ctx context.Context, nodeID string, status node.Status, version int64) error {
+	start := time.Now()
 	err := r.store.UpdateNodeStatus(ctx, db.UpdateNodeStatusParams{
 		Status:  string(status),
 		ID:      nodeID,
 		Version: version,
 	})
+	r.logger.DBQuery(ctx, "UpdateNodeStatus", "nodes", time.Since(start), slog.String("node_id", nodeID), slog.String("status", string(status)))
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return node.ErrConcurrentModification
+			return apperrors.NewNodeError(apperrors.ErrCodeNodeConflict, "failed to update node status, concurrent modification or not found", false, err)
 		}
-		return fmt.Errorf("failed to update node status: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to update node status", err, slog.String("node_id", nodeID), slog.Int64("version", version))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to update node status", true, err)
 	}
-
 	return nil
 }
 
 // UpdateHealth updates node health information
 func (r *nodeRepository) UpdateHealth(ctx context.Context, nodeID string, health *node.Health) error {
-	// Update activity with connected peers count
-	handshake := sql.NullTime{
-		Time:  health.LastChecked,
-		Valid: true,
-	}
-
+	handshake := sql.NullTime{Time: health.LastChecked, Valid: true}
+	start := time.Now()
 	err := r.store.UpdateNodeActivity(ctx, db.UpdateNodeActivityParams{
 		LastHandshakeAt:  handshake,
 		ConnectedClients: int64(health.ConnectedPeers),
 		ID:               nodeID,
 	})
-	if err != nil {
-		return fmt.Errorf("failed to update node health: %w", err)
-	}
+	r.logger.DBQuery(ctx, "UpdateNodeActivity", "nodes", time.Since(start), slog.String("node_id", nodeID))
 
+	if err != nil {
+		r.logger.ErrorCtx(ctx, "failed to update node health activity", err, slog.String("node_id", nodeID))
+		return apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to update node health activity", true, err)
+	}
 	return nil
 }
 
 // GetUnhealthyNodes retrieves all unhealthy nodes
 func (r *nodeRepository) GetUnhealthyNodes(ctx context.Context) ([]*node.Node, error) {
-	// Get nodes by unhealthy status
+	start := time.Now()
 	dbNodes, err := r.store.GetNodesByStatus(ctx, string(node.StatusUnhealthy))
+	r.logger.DBQuery(ctx, "GetNodesByStatus", "nodes", time.Since(start), slog.String("status", string(node.StatusUnhealthy)))
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get unhealthy nodes: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get unhealthy nodes", err)
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get unhealthy nodes", true, err)
 	}
 
 	nodes := make([]*node.Node, 0, len(dbNodes))
 	for i := range dbNodes {
 		domainNode, err := r.toDomainNode(&dbNodes[i])
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert node: %w", err)
+			return nil, apperrors.NewSystemError(apperrors.ErrCodeInternal, "failed to convert db node to domain node", false, err)
 		}
 		nodes = append(nodes, domainNode)
 	}
-
 	return nodes, nil
 }
 
 // GetActiveNodes retrieves all active nodes
 func (r *nodeRepository) GetActiveNodes(ctx context.Context) ([]*node.Node, error) {
-	// Get nodes by active status
+	start := time.Now()
 	dbNodes, err := r.store.GetNodesByStatus(ctx, string(node.StatusActive))
+	r.logger.DBQuery(ctx, "GetNodesByStatus", "nodes", time.Since(start), slog.String("status", string(node.StatusActive)))
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get active nodes: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get active nodes", err)
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get active nodes", true, err)
 	}
 
 	nodes := make([]*node.Node, 0, len(dbNodes))
 	for i := range dbNodes {
 		domainNode, err := r.toDomainNode(&dbNodes[i])
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert node: %w", err)
+			return nil, apperrors.NewSystemError(apperrors.ErrCodeInternal, "failed to convert db node to domain node", false, err)
 		}
 		nodes = append(nodes, domainNode)
 	}
-
 	return nodes, nil
 }
 
 // GetNodeCapacity retrieves node capacity information
 func (r *nodeRepository) GetNodeCapacity(ctx context.Context, nodeID string) (*node.NodeCapacity, error) {
-	// Get node to extract capacity info
 	n, err := r.GetByID(ctx, nodeID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Assume max 253 peers per node (based on /24 subnet minus server IP)
 	const maxPeers = 253
-
 	capacity := &node.NodeCapacity{
 		NodeID:         n.ID,
 		MaxPeers:       maxPeers,
@@ -266,27 +291,33 @@ func (r *nodeRepository) GetNodeCapacity(ctx context.Context, nodeID string) (*n
 		AvailablePeers: maxPeers - n.ConnectedClients,
 		CapacityUsed:   n.CalculateCapacityUsage(maxPeers),
 	}
-
 	return capacity, nil
 }
 
 // GetStatistics retrieves node statistics
 func (r *nodeRepository) GetStatistics(ctx context.Context) (*node.Statistics, error) {
+	start := time.Now()
 	nodeCount, err := r.store.GetNodeCount(ctx)
+	r.logger.DBQuery(ctx, "GetNodeCount", "nodes", time.Since(start))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node count: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get node count", err)
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get node count", true, err)
 	}
 
-	// Get total connected clients
+	start = time.Now()
 	totalClients, err := r.store.GetTotalConnectedClients(ctx)
+	r.logger.DBQuery(ctx, "GetTotalConnectedClients", "nodes", time.Since(start))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get total clients: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get total clients", err)
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get total clients", true, err)
 	}
 
-	// Get unhealthy nodes count
+	start = time.Now()
 	unhealthyNodes, err := r.store.GetNodesByStatus(ctx, string(node.StatusUnhealthy))
+	r.logger.DBQuery(ctx, "GetNodesByStatus", "nodes", time.Since(start), slog.String("status", string(node.StatusUnhealthy)))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get unhealthy nodes: %w", err)
+		r.logger.ErrorCtx(ctx, "failed to get unhealthy nodes", err)
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get unhealthy nodes", true, err)
 	}
 
 	stats := &node.Statistics{
@@ -298,7 +329,6 @@ func (r *nodeRepository) GetStatistics(ctx context.Context) (*node.Statistics, e
 		TotalPeers:        totalClients.(int64),
 	}
 
-	// Calculate average peers per node
 	if stats.TotalNodes > 0 {
 		stats.AveragePeersPerNode = float64(stats.TotalPeers) / float64(stats.TotalNodes)
 	}
@@ -308,12 +338,10 @@ func (r *nodeRepository) GetStatistics(ctx context.Context) (*node.Statistics, e
 
 // IncrementVersion increments the node version for optimistic locking
 func (r *nodeRepository) IncrementVersion(ctx context.Context, nodeID string) (int64, error) {
-	// Get current node
 	n, err := r.GetByID(ctx, nodeID)
 	if err != nil {
 		return 0, err
 	}
-
 	return n.Version + 1, nil
 }
 
@@ -347,7 +375,6 @@ func (r *nodeRepository) toDomainNode(dbNode *db.Node) (*node.Node, error) {
 
 // applyFilters applies additional filters to nodes
 func (r *nodeRepository) applyFilters(nodes []*node.Node, filters node.Filters) []*node.Node {
-	// Apply server ID filter
 	if filters.ServerID != nil {
 		var filtered []*node.Node
 		for _, n := range nodes {
@@ -358,7 +385,6 @@ func (r *nodeRepository) applyFilters(nodes []*node.Node, filters node.Filters) 
 		nodes = filtered
 	}
 
-	// Apply IP address filter
 	if filters.IPAddress != nil {
 		var filtered []*node.Node
 		for _, n := range nodes {
@@ -369,7 +395,6 @@ func (r *nodeRepository) applyFilters(nodes []*node.Node, filters node.Filters) 
 		nodes = filtered
 	}
 
-	// Apply offset
 	if filters.Offset != nil && *filters.Offset > 0 {
 		if *filters.Offset >= len(nodes) {
 			return []*node.Node{}
@@ -377,7 +402,6 @@ func (r *nodeRepository) applyFilters(nodes []*node.Node, filters node.Filters) 
 		nodes = nodes[*filters.Offset:]
 	}
 
-	// Apply limit
 	if filters.Limit != nil && *filters.Limit > 0 && *filters.Limit < len(nodes) {
 		nodes = nodes[:*filters.Limit]
 	}

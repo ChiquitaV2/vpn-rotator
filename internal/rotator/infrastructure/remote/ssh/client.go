@@ -2,11 +2,13 @@ package ssh
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
 
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -23,63 +25,66 @@ type client struct {
 	host   string
 	conn   *ssh.Client
 	mutex  sync.Mutex
+	logger *applogger.Logger
 }
 
 // NewClient creates a new SSH client
-func NewClient(host, user, privateKey string) (Client, error) {
-	// Parse the private key
+func NewClient(host, user, privateKey string, logger *applogger.Logger) (Client, error) {
 	signer, err := ssh.ParsePrivateKey([]byte(privateKey))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
+		return nil, apperrors.NewSystemError(
+			apperrors.ErrCodeConfiguration,
+			"failed to parse private key",
+			false, err,
+		)
 	}
 
-	// Create SSH client configuration
 	config := &ssh.ClientConfig{
 		User: user,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Implement proper host key verification
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         30 * time.Second,
 	}
 
 	return &client{
 		config: config,
 		host:   host,
+		logger: logger.WithComponent("ssh.client").With(slog.String("host", host)),
 	}, nil
 }
 
 // RunCommand executes a command on the remote host
 func (c *client) RunCommand(ctx context.Context, command string) (string, error) {
+	op := c.logger.StartOp(ctx, "run_command", slog.String("command", command))
+
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	// Establish connection if not already connected
 	if c.conn == nil {
-		if err := c.connect(); err != nil {
+		if err := c.connect(ctx); err != nil {
+			op.Fail(err, "connection failed")
 			return "", err
 		}
 	}
 
-	// Create a session
 	session, err := c.conn.NewSession()
 	if err != nil {
-		// Connection might be stale, try to reconnect once
-		c.conn.Close()
-		c.conn = nil
-
-		if err := c.connect(); err != nil {
-			return "", fmt.Errorf("failed to reconnect: %w", err)
+		c.logger.DebugContext(ctx, "SSH session failed, attempting reconnect", slog.String("error", err.Error()))
+		if err := c.reconnect(ctx); err != nil {
+			op.Fail(err, "reconnect failed")
+			return "", err
 		}
-
 		session, err = c.conn.NewSession()
 		if err != nil {
-			return "", fmt.Errorf("failed to create session after reconnect: %w", err)
+			err = apperrors.NewInfrastructureError(apperrors.ErrCodeSSHConnection, "failed to create session after reconnect", true, err)
+			op.Fail(err, "session creation failed after reconnect")
+			return "", err
 		}
 	}
 	defer session.Close()
 
-	// Set up context cancellation
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -89,25 +94,37 @@ func (c *client) RunCommand(ctx context.Context, command string) (string, error)
 		}
 	}()
 
-	// Execute the command
 	output, err := session.CombinedOutput(command)
 	close(done)
 
 	if err != nil {
-		return string(output), fmt.Errorf("command failed: %w", err)
+		err = apperrors.NewInfrastructureError(apperrors.ErrCodeSSHCommand, "ssh command failed", true, err)
+		op.Fail(err, "command execution failed", slog.String("output", string(output)))
+		return string(output), err
 	}
 
+	op.Complete("command executed successfully")
 	return string(output), nil
 }
 
-// connect establishes a new SSH connection
-func (c *client) connect() error {
+// connect establishes a new SSH connection (not thread-safe, caller must hold lock)
+func (c *client) connect(ctx context.Context) error {
 	conn, err := ssh.Dial("tcp", net.JoinHostPort(c.host, "22"), c.config)
 	if err != nil {
-		return fmt.Errorf("failed to connect to %s: %w", c.host, err)
+		return apperrors.NewInfrastructureError(apperrors.ErrCodeSSHConnection, "failed to connect to host", true, err).
+			WithMetadata("host", c.host)
 	}
 	c.conn = conn
 	return nil
+}
+
+// reconnect closes the existing connection and establishes a new one
+func (c *client) reconnect(ctx context.Context) error {
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+	return c.connect(ctx)
 }
 
 // Close closes the SSH connection
@@ -118,6 +135,9 @@ func (c *client) Close() error {
 	if c.conn != nil {
 		err := c.conn.Close()
 		c.conn = nil
+		if err != nil {
+			c.logger.WarnContext(context.Background(), "error closing ssh connection", slog.String("error", err.Error()))
+		}
 		return err
 	}
 	return nil
@@ -132,9 +152,9 @@ func (c *client) IsHealthy() bool {
 		return false
 	}
 
-	// Try to create a session to test the connection
 	session, err := c.conn.NewSession()
 	if err != nil {
+		c.logger.DebugContext(context.Background(), "health check failed: session creation", slog.String("error", err.Error()))
 		return false
 	}
 	session.Close()

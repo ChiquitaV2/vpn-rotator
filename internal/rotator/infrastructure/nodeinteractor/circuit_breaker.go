@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker
@@ -36,7 +38,15 @@ func NewCircuitBreaker(config CircuitBreakerConfig) *CircuitBreaker {
 // Execute executes a function with circuit breaker protection
 func (cb *CircuitBreaker) Execute(ctx context.Context, operation func() error) error {
 	if !cb.canExecute() {
-		return NewCircuitBreakerError("", "execute", string(cb.state), cb.failureCount, cb.lastFailure, cb.nextAttempt, nil)
+		return errors.NewInfrastructureError(
+			errors.ErrCodeCircuitOpen,
+			"circuit breaker is open",
+			true,
+			nil,
+		).WithMetadata("state", cb.state).
+			WithMetadata("failure_count", cb.failureCount).
+			WithMetadata("last_failure", cb.lastFailure).
+			WithMetadata("next_attempt", cb.nextAttempt)
 	}
 
 	err := operation()

@@ -2,19 +2,21 @@ package ssh
 
 import (
 	"context"
-	"log/slog"
-	"os"
 	"testing"
 	"time"
 
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"golang.org/x/crypto/ssh"
 )
 
 func TestNewPool(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := applogger.NewDevelopment("test")
 	privateKey := `-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAFwAAAAdzc2gtcn
-NhAAAAAwEAAQAAAQEA1234567890abcdef...
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCvVt9z9geYu6OXwOgii7N6hrQPv6ufeT3UzmPn8g55aAAAAJhWOTfhVjk3
+4QAAAAtzc2gtZWQyNTUxOQAAACCvVt9z9geYu6OXwOgii7N6hrQPv6ufeT3UzmPn8g55aA
+AAAEDmqaXKIinGHUxZ0J+sihUPP4E9PDGplOCAoBK49VunQ69W33P2B5i7o5fA6CKLs3qG
+tA+/q595PdTOY+fyDnloAAAAEG93ZW5AUGFsbWEubG9jYWwBAgMEBQ==
 -----END OPENSSH PRIVATE KEY-----`
 
 	pool := NewPool(privateKey, logger, 5*time.Minute, ssh.InsecureIgnoreHostKey())
@@ -32,7 +34,7 @@ NhAAAAAwEAAQAAAQEA1234567890abcdef...
 }
 
 func TestPoolStats(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := applogger.NewDevelopment("test")
 	privateKey := "test-key"
 
 	pool := &Pool{
@@ -57,7 +59,7 @@ func TestPoolStats(t *testing.T) {
 }
 
 func TestCleanupIdleConnections(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := applogger.NewDevelopment("test")
 	privateKey := "test-key"
 
 	pool := &Pool{

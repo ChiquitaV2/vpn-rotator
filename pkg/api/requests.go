@@ -11,11 +11,6 @@ type DisconnectRequest struct {
 	PeerID string `json:"peer_id"`
 }
 
-// ConfigRequest represents the VPN configuration request
-type ConfigRequest struct {
-	ClientPublicKey *string `json:"client_public_key,omitempty"`
-}
-
 // PeerListParams represents query parameters for listing peers
 type PeerListParams struct {
 	NodeID *string `json:"node_id,omitempty"`

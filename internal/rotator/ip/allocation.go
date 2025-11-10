@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+
+	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 )
 
 // SubnetAllocator handles subnet allocation logic
@@ -29,7 +31,7 @@ func (a *SubnetAllocator) FindNextAvailableSubnet(ctx context.Context, usedCIDRs
 	for i := 0; i < maxSubnets; i++ {
 		cidr, err := a.config.GenerateSubnetCIDR(i)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate subnet CIDR: %w", err)
+			return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "failed to generate subnet CIDR", false, err).WithMetadata("index", i)
 		}
 
 		// Skip if already used
@@ -40,25 +42,25 @@ func (a *SubnetAllocator) FindNextAvailableSubnet(ctx context.Context, usedCIDRs
 		// Parse and create subnet
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse generated CIDR %s: %w", cidr, err)
+			return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, fmt.Sprintf("failed to parse generated CIDR %s", cidr), false, err).WithMetadata("cidr", cidr)
 		}
 
 		// Generate a temporary node ID for validation
 		subnet, err := NewSubnet("temporary-id", network)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create subnet: %w", err)
+			return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "failed to create subnet", false, err).WithMetadata("cidr", cidr)
 		}
 
 		return subnet, nil
 	}
 
-	return nil, ErrNoAvailableSubnets
+	return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "no available subnets in network range", false, nil)
 }
 
 // ValidateSubnetAllocation validates that a subnet allocation is acceptable
 func (a *SubnetAllocator) ValidateSubnetAllocation(subnet *Subnet) error {
 	if subnet == nil {
-		return fmt.Errorf("subnet cannot be nil")
+		return sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "subnet cannot be nil", false, nil)
 	}
 
 	// Validate alignment
@@ -86,7 +88,7 @@ func NewIPAllocator() *IPAllocator {
 // FindNextAvailableIP finds the next available IP in a subnet
 func (a *IPAllocator) FindNextAvailableIP(subnet *Subnet, allocatedIPs []*IPv4Address) (*IPv4Address, error) {
 	if subnet == nil {
-		return nil, fmt.Errorf("subnet cannot be nil")
+		return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidIPAddress, "subnet cannot be nil", false, nil)
 	}
 
 	// Build map of allocated IPs for quick lookup
@@ -121,7 +123,7 @@ func (a *IPAllocator) FindNextAvailableIP(subnet *Subnet, allocatedIPs []*IPv4Ad
 		}
 	}
 
-	return nil, ErrSubnetExhausted
+	return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "subnet has no available IPs", false, nil).WithMetadata("subnet_cidr", subnet.CIDR)
 }
 
 // ipGreaterThan checks if ip1 > ip2
@@ -141,7 +143,7 @@ func ipGreaterThan(ip1, ip2 net.IP) bool {
 // FindLeastUtilizedSubnet finds the subnet with the lowest utilization
 func FindLeastUtilizedSubnet(allocations []*SubnetAllocation) (string, error) {
 	if len(allocations) == 0 {
-		return "", fmt.Errorf("no subnet allocations available")
+		return "", sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "no subnet allocations available", false, nil)
 	}
 
 	var leastUtilized *SubnetAllocation
@@ -156,7 +158,7 @@ func FindLeastUtilizedSubnet(allocations []*SubnetAllocation) (string, error) {
 	}
 
 	if leastUtilized == nil {
-		return "", fmt.Errorf("could not find least utilized subnet")
+		return "", sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "could not find least utilized subnet", false, nil)
 	}
 
 	return leastUtilized.Subnet.NodeID, nil

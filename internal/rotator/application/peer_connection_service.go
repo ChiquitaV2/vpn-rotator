@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net"
 
@@ -10,6 +9,8 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
@@ -20,7 +21,7 @@ type PeerConnectionService struct {
 	peerService      peer.Service
 	ipService        ip.Service
 	wireguardManager nodeinteractor.WireGuardManager
-	logger           *slog.Logger
+	logger           *applogger.Logger
 }
 
 // NewPeerConnectionService creates a new peer connection service
@@ -29,252 +30,210 @@ func NewPeerConnectionService(
 	peerService peer.Service,
 	ipService ip.Service,
 	wireguardManager nodeinteractor.WireGuardManager,
-	logger *slog.Logger,
+	logger *applogger.Logger,
 ) *PeerConnectionService {
 	return &PeerConnectionService{
 		nodeService:      nodeService,
 		peerService:      peerService,
 		ipService:        ipService,
 		wireguardManager: wireguardManager,
-		logger:           logger,
+		logger:           logger.WithComponent("peerconnect.service"),
 	}
 }
 
 // ConnectPeer connects a new peer by coordinating node selection, IP allocation, and peer creation
 func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.ConnectRequest) (*api.ConnectResponse, error) {
-	publicKey := ""
+	op := s.logger.StartOp(ctx, "ConnectPeer")
 	if req.PublicKey != nil {
-		publicKey = *req.PublicKey
+		op.With(slog.String("public_key", *req.PublicKey))
 	}
 
-	s.logger.Info("connecting peer", slog.String("public_key", publicKey))
-
-	// Validate request
 	if err := s.validateConnectRequest(req); err != nil {
-		return nil, fmt.Errorf("invalid connect request: %w", err)
+		op.Fail(err, "invalid connect request")
+		return nil, err
 	}
 
-	if response, err := s.connectExistingPeer(ctx, req); err == nil && response != nil {
-		s.logger.Info("peer already exists, returning existing connection",
-			slog.String("peer_id", response.PeerID),
-			slog.String("server_ip", response.ServerIP),
-			slog.String("client_ip", response.ClientIP))
+	if response, err := s.connectExistingPeer(ctx, req); response != nil {
+		op.Complete("existing peer connected")
 		return response, nil
+	} else if err != nil {
+		op.Fail(err, "failed to check existing peer")
+		return nil, err
 	}
 
-	// Select or create optimal node for the peer
-	selectedNode, err := s.selectOrCreateNode(ctx)
+	selectedNode, err := s.selectNode(ctx)
 	if err != nil {
-		// Check if this is a provisioning required error
-		if provErr, ok := err.(*ProvisioningRequiredError); ok {
-			s.logger.Info("node provisioning required for peer connection",
-				slog.String("public_key", publicKey),
-				slog.String("message", provErr.Message),
-				slog.Int("estimated_wait", provErr.EstimatedWait))
-
-			// Return the provisioning error directly - the caller should handle this
-			return nil, provErr
-		}
-		return nil, fmt.Errorf("failed to select or create node: %w", err)
+		op.Fail(err, "failed to select or create node")
+		return nil, err
 	}
+	op.With(slog.String("node_id", selectedNode.ID))
+	op.Progress("node selected")
 
-	s.logger.Debug("selected node for peer",
-		slog.String("node_id", selectedNode.ID),
-		slog.String("node_ip", selectedNode.IPAddress))
-
-	// Validate node capacity
 	if err := s.nodeService.ValidateNodeCapacity(ctx, selectedNode.ID, 1); err != nil {
-		return nil, fmt.Errorf("node capacity validation failed: %w", err)
+		err = apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeNodeAtCapacity, "node capacity validation failed", false)
+		op.Fail(err, "node at capacity")
+		return nil, err
 	}
 
-	// Allocate IP address for the peer
 	allocatedIP, err := s.ipService.AllocateClientIP(ctx, selectedNode.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to allocate IP for peer: %w", err)
+		err = apperrors.WrapWithDomain(err, apperrors.DomainIP, apperrors.ErrCodeIPAllocation, "failed to allocate IP for peer", true)
+		op.Fail(err, "ip allocation failed")
+		return nil, err
 	}
+	op.With(slog.String("allocated_ip", allocatedIP.String()))
+	op.Progress("ip allocated")
 
-	s.logger.Debug("allocated IP for peer",
-		slog.String("ip", allocatedIP.String()),
-		slog.String("node_id", selectedNode.ID))
-
-	// Create peer in domain
 	peerReq := &peer.CreateRequest{
 		NodeID:      selectedNode.ID,
-		PublicKey:   publicKey,
+		PublicKey:   *req.PublicKey,
 		AllocatedIP: allocatedIP.String(),
 	}
 
 	createdPeer, err := s.peerService.Create(ctx, peerReq)
 	if err != nil {
-		// Cleanup allocated IP on failure
-		_ = s.ipService.ReleaseClientIP(ctx, selectedNode.ID, allocatedIP)
-		return nil, fmt.Errorf("failed to create peer: %w", err)
+		if cleanupErr := s.ipService.ReleaseClientIP(ctx, selectedNode.ID, allocatedIP); cleanupErr != nil {
+			s.logger.ErrorCtx(ctx, "cleanup failed: failed to release IP after peer creation failure", cleanupErr)
+		}
+		err = apperrors.WrapWithDomain(err, apperrors.DomainPeer, apperrors.ErrCodePeerConflict, "failed to create peer", false)
+		op.Fail(err, "peer creation failed")
+		return nil, err
 	}
+	op.With(slog.String("peer_id", createdPeer.ID))
 
-	// Add peer to node via nodeInteractor (direct infrastructure call)
 	wgConfig := nodeinteractor.PeerWireGuardConfig{
 		PublicKey:  createdPeer.PublicKey,
 		AllowedIPs: []string{createdPeer.AllocatedIP + "/32"},
 	}
 
 	if err := s.wireguardManager.AddPeer(ctx, selectedNode.IPAddress, wgConfig); err != nil {
-		// Cleanup peer and IP on failure
-		_ = s.peerService.Remove(ctx, createdPeer.ID)
-		_ = s.ipService.ReleaseClientIP(ctx, selectedNode.ID, allocatedIP)
-		return nil, fmt.Errorf("failed to add peer to node infrastructure: %w", err)
+		if cleanupErr := s.peerService.Remove(ctx, createdPeer.ID); cleanupErr != nil {
+			s.logger.ErrorCtx(ctx, "cleanup failed: failed to remove peer after infra add failure", cleanupErr)
+		}
+		if cleanupErr := s.ipService.ReleaseClientIP(ctx, selectedNode.ID, allocatedIP); cleanupErr != nil {
+			s.logger.ErrorCtx(ctx, "cleanup failed: failed to release IP after infra add failure", cleanupErr)
+		}
+		err = apperrors.NewInfrastructureError(apperrors.ErrCodeSSHConnection, "failed to add peer to node infrastructure", true, err)
+		op.Fail(err, "failed to add peer to node")
+		return nil, err
 	}
 
-	// Get node public key for client configuration via nodeInteractor
-	nodePublicKey := selectedNode.ServerPublicKey // From database
+	nodePublicKey := selectedNode.ServerPublicKey
 	if nodePublicKey == "" {
-		// Fallback: query from node if not in database
 		wgStatus, err := s.wireguardManager.GetWireGuardStatus(ctx, selectedNode.IPAddress)
 		if err != nil {
-			s.logger.Warn("failed to get node public key from infrastructure",
-				slog.String("node_id", selectedNode.ID),
-				slog.String("error", err.Error()))
+			s.logger.WarnContext(ctx, "failed to get node public key from infrastructure, client config may be incomplete", "error", err.Error())
 		} else {
 			nodePublicKey = wgStatus.PublicKey
 		}
 	}
 
-	// Build response
 	response := &api.ConnectResponse{
 		PeerID:          createdPeer.ID,
 		ServerPublicKey: nodePublicKey,
 		ServerIP:        selectedNode.IPAddress,
-		ServerPort:      51820, // Default WireGuard port
+		ServerPort:      51820,
 		ClientIP:        createdPeer.AllocatedIP,
 		DNS:             []string{"1.1.1.1", "8.8.8.8"},
 		AllowedIPs:      []string{"0.0.0.0/0"},
 	}
 
-	s.logger.Info("peer connected successfully",
-		slog.String("peer_id", createdPeer.ID),
-		slog.String("node_id", selectedNode.ID),
-		slog.String("allocated_ip", createdPeer.AllocatedIP))
-
+	op.Complete("peer connected successfully")
 	return response, nil
 }
 
 // DisconnectPeer disconnects a peer by removing it from the node and cleaning up resources
 func (s *PeerConnectionService) DisconnectPeer(ctx context.Context, peerID string) error {
-	s.logger.Info("disconnecting peer", slog.String("peer_id", peerID))
+	op := s.logger.StartOp(ctx, "DisconnectPeer", slog.String("peer_id", peerID))
 
-	// Get peer information
 	existingPeer, err := s.peerService.Get(ctx, peerID)
 	if err != nil {
-		return fmt.Errorf("failed to get peer: %w", err)
+		op.Fail(err, "failed to get peer for disconnection")
+		return err
 	}
+	op.With(slog.String("node_id", existingPeer.NodeID))
 
-	// Get node to access its IP address
 	selectedNode, err := s.nodeService.GetNode(ctx, existingPeer.NodeID)
 	if err != nil {
-		s.logger.Warn("failed to get node for peer removal",
-			slog.String("peer_id", peerID),
-			slog.String("node_id", existingPeer.NodeID),
-			slog.String("error", err.Error()))
+		s.logger.WarnContext(ctx, "failed to get node for peer removal, infrastructure cleanup will be skipped", "error", err.Error())
 	} else {
-		// Remove peer from node via nodeInteractor (direct infrastructure call)
 		if err := s.wireguardManager.RemovePeer(ctx, selectedNode.IPAddress, existingPeer.PublicKey); err != nil {
-			s.logger.Warn("failed to remove peer from node infrastructure",
-				slog.String("peer_id", peerID),
-				slog.String("node_id", existingPeer.NodeID),
-				slog.String("error", err.Error()))
+			s.logger.WarnContext(ctx, "failed to remove peer from node infrastructure, continuing", "error", err.Error())
 		}
 	}
 
-	// Release IP address
 	ip := net.ParseIP(existingPeer.AllocatedIP)
 	if ip != nil {
 		if err := s.ipService.ReleaseClientIP(ctx, existingPeer.NodeID, ip); err != nil {
-			s.logger.Warn("failed to release IP",
-				slog.String("peer_id", peerID),
-				slog.String("ip", existingPeer.AllocatedIP),
-				slog.String("error", err.Error()))
+			s.logger.WarnContext(ctx, "failed to release IP, continuing", "error", err.Error())
 		}
 	}
 
-	// Remove peer from domain
 	if err := s.peerService.Remove(ctx, peerID); err != nil {
-		return fmt.Errorf("failed to remove peer: %w", err)
+		err = apperrors.WrapWithDomain(err, apperrors.DomainPeer, apperrors.ErrCodePeerConflict, "failed to remove peer from domain", false)
+		op.Fail(err, "failed to remove peer from domain")
+		return err
 	}
 
-	s.logger.Info("peer disconnected successfully", slog.String("peer_id", peerID))
+	op.Complete("peer disconnected successfully")
 	return nil
 }
 
-// selectOrCreateNode selects an optimal node or triggers async provisioning if none are available
-func (s *PeerConnectionService) selectOrCreateNode(ctx context.Context) (*node.Node, error) {
-	// Try to select an existing active node
+// selectNode selects an optimal node or returns error if none are available
+func (s *PeerConnectionService) selectNode(ctx context.Context) (*node.Node, error) {
 	activeStatus := node.StatusActive
-	selectedNode, err := s.nodeService.SelectOptimalNode(ctx, node.Filters{
-		Status: &activeStatus,
-	})
-
-	// If we have an active node, use it
+	selectedNode, err := s.nodeService.SelectOptimalNode(ctx, node.Filters{Status: &activeStatus})
 	if err == nil {
 		return selectedNode, nil
 	}
 
-	// If no active nodes available, return a special error that indicates provisioning is needed
-	if err == node.ErrNodeNotFound || err == node.ErrNodeAtCapacity {
-		s.logger.Info("no active nodes available, provisioning required")
-
-		// Return a special error that the VPN orchestrator can handle
-		// The VPN orchestrator will decide whether to use event-driven or synchronous provisioning
-		return nil, &ProvisioningRequiredError{
-			Message:       "No active nodes available, provisioning required",
-			EstimatedWait: 180, // 3 minutes default estimate
-			RetryAfter:    90,  // Suggest retry in 1.5 minutes
-		}
+	if apperrors.IsErrorCode(err, apperrors.ErrCodeNodeNotFound) || apperrors.IsErrorCode(err, apperrors.ErrCodeNodeAtCapacity) {
+		s.logger.InfoContext(ctx, "no active nodes available, provisioning required")
+		return nil, apperrors.NewSystemError(apperrors.ErrCodeNodeNotReady, "No active nodes available, provisioning required. Please try again.", true, err).WithMetadata("estimated_wait_sec", 180).WithMetadata("retry_after_sec", 90)
 	}
 
-	return nil, fmt.Errorf("failed to select node: %w", err)
+	return nil, apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeInternal, "failed to select node", false)
 }
 
 // validateConnectRequest validates the connect request
 func (s *PeerConnectionService) validateConnectRequest(req api.ConnectRequest) error {
 	if req.PublicKey == nil || *req.PublicKey == "" {
 		if !req.GenerateKeys {
-			return fmt.Errorf("public key is required or generate_keys must be true")
+			return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "public key is required or generate_keys must be true", false, nil)
 		}
 	}
 
-	if !crypto.IsValidWireGuardKey(*req.PublicKey) {
-		return fmt.Errorf("invalid WireGuard public key format")
+	if req.PublicKey != nil && !crypto.IsValidWireGuardKey(*req.PublicKey) {
+		return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "invalid WireGuard public key format", false, nil)
 	}
-
-	// TODO: Add WireGuard public key format validation
-	// TODO: Add key generation logic if req.GenerateKeys is true
 
 	return nil
 }
 
 func (s *PeerConnectionService) connectExistingPeer(ctx context.Context, req api.ConnectRequest) (*api.ConnectResponse, error) {
-	// Check if a peer with the given public key already exists
+	if req.PublicKey == nil {
+		return nil, nil
+	}
 	existingPeer, err := s.peerService.GetByPublicKey(ctx, *req.PublicKey)
 	if err != nil {
-		if err == peer.ErrPeerNotFound {
-			return nil, nil // Peer does not exist
+		if apperrors.IsErrorCode(err, apperrors.ErrCodePeerNotFound) {
+			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to check existing peer: %w", err)
+		return nil, apperrors.WrapWithDomain(err, apperrors.DomainPeer, apperrors.ErrCodeDatabase, "failed to check existing peer", true)
 	}
 
-	// Get node information
 	n, err := s.nodeService.GetNode(ctx, existingPeer.NodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node for existing peer: %w", err)
+		return nil, apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeNodeNotFound, "failed to get node for existing peer", false)
 	}
-	// Build response for existing peer
-	response := &api.ConnectResponse{
+
+	return &api.ConnectResponse{
 		PeerID:          existingPeer.ID,
 		ServerPublicKey: n.ServerPublicKey,
 		ServerIP:        n.IPAddress,
-		ServerPort:      n.Port, // Default WireGuard port
+		ServerPort:      n.Port,
 		ClientIP:        existingPeer.AllocatedIP,
 		DNS:             []string{"1.1.1.1", "8.8.8.8"},
 		AllowedIPs:      []string{"0.0.0.0/0"},
-	}
-	return response, nil
+	}, nil
 }

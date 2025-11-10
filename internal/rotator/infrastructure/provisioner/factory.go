@@ -2,7 +2,9 @@ package provisioner
 
 import (
 	"fmt"
-	"log/slog"
+
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // ProviderType represents the type of cloud provider
@@ -28,27 +30,25 @@ type Config struct {
 }
 
 // NewCloudProvisioner creates a new cloud provisioner based on the configuration
-func NewCloudProvisioner(config *Config, apiToken string, logger *slog.Logger) (CloudProvisioner, error) {
+func NewCloudProvisioner(config *Config, apiToken string, logger *applogger.Logger) (CloudProvisioner, error) { // <-- Changed
 	if config == nil {
-		return nil, fmt.Errorf("config is required")
+		return nil, apperrors.NewSystemError(apperrors.ErrCodeConfiguration, "provisioner config is required", false, nil)
 	}
+
+	scopedLogger := logger.WithComponent("provisioner.factory")
 
 	switch config.Provider {
 	case ProviderTypeHetzner:
 		if config.Hetzner == nil {
-			return nil, fmt.Errorf("Hetzner config is required for Hetzner provider")
+			return nil, apperrors.NewSystemError(apperrors.ErrCodeConfiguration, "Hetzner config is required for Hetzner provider", false, nil)
 		}
-		return NewHetznerProvisioner(apiToken, config.Hetzner, logger)
+		// Pass the scoped logger to the Hetzner provisioner
+		return NewHetznerProvisioner(apiToken, config.Hetzner, scopedLogger)
 
-	// Add more providers as needed
-	// case ProviderTypeAWS:
-	//     if config.AWS == nil {
-	//         return nil, fmt.Errorf("AWS config is required for AWS provider")
-	//     }
-	//     return NewAWSProvisioner(apiToken, config.AWS, logger)
+	// ... (other providers) ...
 
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %s", config.Provider)
+		return nil, apperrors.NewSystemError(apperrors.ErrCodeConfiguration, fmt.Sprintf("unsupported provider type: %s", config.Provider), false, nil)
 	}
 }
 

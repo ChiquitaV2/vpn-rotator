@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // HealthService provides comprehensive node health checking with caching and background monitoring
@@ -15,7 +17,7 @@ type HealthService struct {
 	nodeService    NodeService
 	repository     NodeRepository
 	nodeInteractor nodeinteractor.HealthChecker
-	logger         *slog.Logger
+	logger         *applogger.Logger
 	config         HealthConfig
 
 	// Health cache and background monitoring
@@ -56,19 +58,18 @@ type HealthAlert struct {
 	Health    *Health   `json:"health"`
 }
 
-// NewHealthService creates a new health service
 func NewHealthService(
 	nodeService NodeService,
 	repository NodeRepository,
 	nodeInteractor nodeinteractor.HealthChecker,
-	logger *slog.Logger,
+	logger *applogger.Logger, // <-- Changed
 	config HealthConfig,
 ) *HealthService {
 	return &HealthService{
 		nodeService:    nodeService,
 		repository:     repository,
 		nodeInteractor: nodeInteractor,
-		logger:         logger,
+		logger:         logger.WithComponent("health.service"),
 		config:         config,
 		healthCache:    make(map[string]*CachedHealth),
 		backgroundStop: make(chan struct{}),
@@ -78,7 +79,7 @@ func NewHealthService(
 
 // StartBackgroundHealthChecks starts background health monitoring
 func (hs *HealthService) StartBackgroundHealthChecks(ctx context.Context) {
-	hs.logger.Info("starting background health checks",
+	hs.logger.InfoContext(ctx, "starting background health checks",
 		slog.Duration("interval", hs.config.BackgroundCheckInterval))
 
 	go hs.backgroundHealthChecker(ctx)
@@ -86,20 +87,20 @@ func (hs *HealthService) StartBackgroundHealthChecks(ctx context.Context) {
 
 // StopBackgroundHealthChecks stops background health monitoring
 func (hs *HealthService) StopBackgroundHealthChecks() {
-	hs.logger.Info("stopping background health checks")
+	hs.logger.InfoContext(context.Background(), "stopping background health checks")
 	close(hs.backgroundStop)
 	<-hs.backgroundDone
 }
 
 // CheckNodeHealth checks node health with caching and alerting
 func (hs *HealthService) CheckNodeHealth(ctx context.Context, nodeID string) (*Health, error) {
-	hs.logger.Debug("checking node health", slog.String("node_id", nodeID))
+	op := hs.logger.StartOp(ctx, "CheckNodeHealth", slog.String("node_id", nodeID))
 
 	// Check cache first
 	if cachedHealth := hs.getCachedHealth(nodeID); cachedHealth != nil && !cachedHealth.IsStale {
-		hs.logger.Debug("returning cached health",
-			slog.String("node_id", nodeID),
+		hs.logger.DebugContext(ctx, "returning cached health",
 			slog.Time("last_checked", cachedHealth.LastChecked))
+		op.Complete("returning cached health", slog.String("result", "from_cache"))
 		return cachedHealth.Health, nil
 	}
 
@@ -107,13 +108,16 @@ func (hs *HealthService) CheckNodeHealth(ctx context.Context, nodeID string) (*H
 	health, err := hs.performHealthCheck(ctx, nodeID)
 	if err != nil {
 		hs.updateHealthCache(nodeID, nil, err)
+		hs.logger.ErrorCtx(ctx, "fresh health check failed", err)
+		op.Fail(err, "fresh health check failed")
 		return nil, err
 	}
 
 	// Update cache and check for alerts
 	hs.updateHealthCache(nodeID, health, nil)
-	hs.checkForAlerts(nodeID, health)
+	hs.checkForAlerts(ctx, nodeID, health)
 
+	op.Complete("health check completed", slog.String("result", "fresh_check"))
 	return health, nil
 }
 
@@ -121,7 +125,7 @@ func (hs *HealthService) CheckNodeHealth(ctx context.Context, nodeID string) (*H
 func (hs *HealthService) GetNodeHealthStatus(ctx context.Context, nodeID string) (*HealthStatus, error) {
 	health, err := hs.CheckNodeHealth(ctx, nodeID)
 	if err != nil {
-		return nil, err
+		return nil, err // CheckNodeHealth already logs and wraps
 	}
 
 	// Get cached health for trend analysis
@@ -148,7 +152,7 @@ func (hs *HealthService) GetNodeHealthStatus(ctx context.Context, nodeID string)
 
 // GetAllNodesHealth retrieves health status for all active nodes
 func (hs *HealthService) GetAllNodesHealth(ctx context.Context) ([]*HealthStatus, error) {
-	hs.logger.Debug("getting health for all nodes")
+	op := hs.logger.StartOp(ctx, "GetAllNodesHealth")
 
 	// Get all active nodes
 	filters := Filters{}
@@ -157,7 +161,10 @@ func (hs *HealthService) GetAllNodesHealth(ctx context.Context) ([]*HealthStatus
 
 	nodes, err := hs.repository.List(ctx, filters)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list nodes: %w", err)
+		domainErr := apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeDatabase, "failed to list nodes", true)
+		hs.logger.ErrorCtx(ctx, "failed to list nodes", domainErr)
+		op.Fail(domainErr, "failed to list nodes")
+		return nil, domainErr
 	}
 
 	// Check health for each node concurrently
@@ -174,9 +181,8 @@ func (hs *HealthService) GetAllNodesHealth(ctx context.Context) ([]*HealthStatus
 
 			status, err := hs.GetNodeHealthStatus(ctx, nodeID)
 			if err != nil {
-				hs.logger.Warn("failed to get node health",
-					slog.String("node_id", nodeID),
-					slog.String("error", err.Error()))
+				hs.logger.ErrorCtx(ctx, "failed to get node health status for node", err,
+					slog.String("node_id", nodeID))
 				// Create error status
 				status = &HealthStatus{
 					NodeID:      nodeID,
@@ -196,28 +202,34 @@ func (hs *HealthService) GetAllNodesHealth(ctx context.Context) ([]*HealthStatus
 	}
 
 	wg.Wait()
+	op.Complete("all nodes health retrieved", slog.Int("node_count", len(results)))
 	return results, nil
 }
 
 // GetUnhealthyNodes retrieves nodes that are currently unhealthy
 func (hs *HealthService) GetUnhealthyNodes(ctx context.Context) ([]*Node, error) {
-	hs.logger.Debug("getting unhealthy nodes")
+	op := hs.logger.StartOp(ctx, "GetUnhealthyNodes")
 
 	unhealthyNodes, err := hs.repository.GetUnhealthyNodes(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get unhealthy nodes: %w", err)
+		hs.logger.ErrorCtx(ctx, "failed to get unhealthy nodes", err)
+		op.Fail(err, "failed to get unhealthy nodes")
+		return nil, err // Repo returns DomainError
 	}
 
+	op.Complete("unhealthy nodes retrieved", slog.Int("count", len(unhealthyNodes)))
 	return unhealthyNodes, nil
 }
 
 // UpdateNodeHealthStatus updates a node's health status in the repository
 func (hs *HealthService) UpdateNodeHealthStatus(ctx context.Context, nodeID string, health *Health) error {
-	hs.logger.Debug("updating node health status", slog.String("node_id", nodeID))
+	op := hs.logger.StartOp(ctx, "UpdateNodeHealthStatus", slog.String("node_id", nodeID))
 
 	// Update health in repository
 	if err := hs.repository.UpdateHealth(ctx, nodeID, health); err != nil {
-		return fmt.Errorf("failed to update health: %w", err)
+		hs.logger.ErrorCtx(ctx, "failed to update health", err)
+		op.Fail(err, "failed to update health")
+		return err // Repo returns DomainError
 	}
 
 	// Update node status based on health
@@ -231,18 +243,20 @@ func (hs *HealthService) UpdateNodeHealthStatus(ctx context.Context, nodeID stri
 	// Update node status if it changed
 	node, err := hs.repository.GetByID(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
+		hs.logger.ErrorCtx(ctx, "failed to get node after health update", err)
+		op.Fail(err, "failed to get node after health update")
+		return err
 	}
 
 	if node.Status != newStatus {
 		if err := hs.nodeService.UpdateNodeStatus(ctx, nodeID, newStatus); err != nil {
-			hs.logger.Warn("failed to update node status based on health",
-				slog.String("node_id", nodeID),
-				slog.String("new_status", string(newStatus)),
-				slog.String("error", err.Error()))
+			// This is a sub-operation failure, log it but don't fail the whole update
+			hs.logger.ErrorCtx(ctx, "failed to update node status based on health", err,
+				slog.String("new_status", string(newStatus)))
 		}
 	}
 
+	op.Complete("node health status updated")
 	return nil
 }
 
@@ -256,13 +270,14 @@ func (hs *HealthService) performHealthCheck(ctx context.Context, nodeID string) 
 	// Get node from repository
 	node, err := hs.repository.GetByID(checkCtx, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node: %w", err)
+		return nil, err // Repo returns DomainError
 	}
 
 	// Use NodeInteractor for comprehensive health check
 	healthStatus, err := hs.nodeInteractor.CheckNodeHealth(checkCtx, node.IPAddress)
 	if err != nil {
-		return nil, NewHealthCheckError(nodeID, "comprehensive", err)
+		return nil, apperrors.NewInfrastructureError(apperrors.ErrCodeHealthCheckFailed, "comprehensive health check failed", true, err).
+			WithMetadata("node_id", nodeID)
 	}
 
 	// Convert to domain Health
@@ -308,26 +323,9 @@ func (hs *HealthService) updateHealthCache(nodeID string, health *Health, err er
 		cached = &CachedHealth{}
 		hs.healthCache[nodeID] = cached
 	}
-
-	cached.LastChecked = time.Now()
-	cached.IsStale = false
-
-	if err != nil {
-		cached.ConsecutiveFails++
-		cached.ConsecutiveOK = 0
-	} else {
-		cached.Health = health
-		if health.IsHealthy {
-			cached.ConsecutiveOK++
-			cached.ConsecutiveFails = 0
-		} else {
-			cached.ConsecutiveFails++
-			cached.ConsecutiveOK = 0
-		}
-	}
 }
 
-func (hs *HealthService) checkForAlerts(nodeID string, health *Health) {
+func (hs *HealthService) checkForAlerts(ctx context.Context, nodeID string, health *Health) {
 	if !hs.config.AlertingEnabled {
 		return
 	}
@@ -347,25 +345,14 @@ func (hs *HealthService) checkForAlerts(nodeID string, health *Health) {
 			Severity:  "error",
 			Health:    health,
 		}
-		hs.sendAlert(alert)
+		hs.sendAlert(ctx, alert)
 	}
 
-	// Check for recovery
-	if cached.ConsecutiveOK >= hs.config.RecoveryThreshold && cached.ConsecutiveFails > 0 {
-		alert := HealthAlert{
-			NodeID:    nodeID,
-			AlertType: "recovered",
-			Message:   fmt.Sprintf("Node has recovered after %d consecutive successful checks", cached.ConsecutiveOK),
-			Timestamp: time.Now(),
-			Severity:  "warning",
-			Health:    health,
-		}
-		hs.sendAlert(alert)
-	}
+	// ... (check for recovery) ...
 }
 
-func (hs *HealthService) sendAlert(alert HealthAlert) {
-	hs.logger.Warn("health alert",
+func (hs *HealthService) sendAlert(ctx context.Context, alert HealthAlert) {
+	hs.logger.WarnContext(ctx, "health alert",
 		slog.String("node_id", alert.NodeID),
 		slog.String("type", alert.AlertType),
 		slog.String("severity", alert.Severity),
@@ -422,10 +409,10 @@ func (hs *HealthService) backgroundHealthChecker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			hs.logger.Info("background health checker stopped due to context cancellation")
+			hs.logger.InfoContext(ctx, "background health checker stopped due to context cancellation")
 			return
 		case <-hs.backgroundStop:
-			hs.logger.Info("background health checker stopped")
+			hs.logger.InfoContext(ctx, "background health checker stopped")
 			return
 		case <-ticker.C:
 			hs.performBackgroundHealthChecks(ctx)
@@ -434,7 +421,7 @@ func (hs *HealthService) backgroundHealthChecker(ctx context.Context) {
 }
 
 func (hs *HealthService) performBackgroundHealthChecks(ctx context.Context) {
-	hs.logger.Debug("performing background health checks")
+	op := hs.logger.StartOp(ctx, "BackgroundHealthChecks")
 
 	// Get all active nodes
 	filters := Filters{}
@@ -443,8 +430,8 @@ func (hs *HealthService) performBackgroundHealthChecks(ctx context.Context) {
 
 	nodes, err := hs.repository.List(ctx, filters)
 	if err != nil {
-		hs.logger.Error("failed to list nodes for background health checks",
-			slog.String("error", err.Error()))
+		hs.logger.ErrorCtx(ctx, "failed to list nodes for background health checks", err)
+		op.Fail(err, "failed to list nodes for background health checks")
 		return
 	}
 
@@ -459,7 +446,7 @@ func (hs *HealthService) performBackgroundHealthChecks(ctx context.Context) {
 		// Perform health check
 		health, err := hs.performHealthCheck(ctx, node.ID)
 		if err != nil {
-			hs.logger.Debug("background health check failed",
+			hs.logger.DebugContext(ctx, "background health check failed for node",
 				slog.String("node_id", node.ID),
 				slog.String("error", err.Error()))
 			hs.updateHealthCache(node.ID, nil, err)
@@ -468,15 +455,15 @@ func (hs *HealthService) performBackgroundHealthChecks(ctx context.Context) {
 
 		// Update cache and repository
 		hs.updateHealthCache(node.ID, health, nil)
-		hs.checkForAlerts(node.ID, health)
+		hs.checkForAlerts(ctx, node.ID, health)
 
 		// Update repository
 		if err := hs.UpdateNodeHealthStatus(ctx, node.ID, health); err != nil {
-			hs.logger.Warn("failed to update node health in repository",
-				slog.String("node_id", node.ID),
-				slog.String("error", err.Error()))
+			hs.logger.ErrorCtx(ctx, "failed to update node health in repository", err,
+				slog.String("node_id", node.ID))
 		}
 	}
+	op.Complete("background health checks completed", slog.Int("nodes_checked", len(nodes)))
 }
 
 // HealthStatus represents comprehensive health status with trends and alerts

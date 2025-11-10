@@ -54,7 +54,13 @@ Examples:
 		}
 
 		// Set up logger
-		log := logger.New(cfg.LogLevel, cfg.LogFormat)
+		loggerConfig := logger.LoggerConfig{
+			Level:     logger.LogLevel(cfg.LogLevel),
+			Format:    logger.OutputFormat(cfg.LogFormat),
+			Component: "connector",
+			Version:   "1.0.0",
+		}
+		log := logger.New(loggerConfig)
 
 		// Create simplified connector
 		conn := connector.NewConnector(cfg, log)

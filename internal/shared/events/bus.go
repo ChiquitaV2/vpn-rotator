@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/google/uuid"
 	gookitEvent "github.com/gookit/event"
 )
@@ -15,7 +16,7 @@ import (
 type gookitEventBus struct {
 	manager     *gookitEvent.Manager
 	config      EventBusConfig
-	logger      *slog.Logger
+	logger      *applogger.Logger
 	subscribers map[string][]EventHandler
 	mu          sync.RWMutex
 	lastError   string
@@ -23,11 +24,12 @@ type gookitEventBus struct {
 }
 
 // NewGookitEventBus creates a new event bus using gookit/event
-func NewGookitEventBus(config EventBusConfig, logger *slog.Logger) EventBus {
+func NewGookitEventBus(config EventBusConfig, logger *applogger.Logger) EventBus {
 	manager := gookitEvent.NewManager("vpn-rotator")
 
 	// Log the configuration (gookit/event doesn't expose all config options)
-	logger.Debug("creating generic event bus",
+	logger.DebugContext(context.Background(),
+		"creating generic event bus",
 		slog.String("mode", config.Mode),
 		slog.Duration("timeout", config.Timeout),
 		slog.Int("max_retries", config.MaxRetries))
@@ -49,7 +51,8 @@ func (b *gookitEventBus) Publish(ctx context.Context, event Event) error {
 	}
 	b.mu.RUnlock()
 
-	b.logger.Debug("publishing event",
+	b.logger.DebugContext(ctx,
+		"publishing event",
 		slog.String("type", event.Type()),
 		slog.String("id", event.ID()),
 		slog.Time("timestamp", event.Timestamp()))
@@ -61,10 +64,11 @@ func (b *gookitEventBus) Publish(ctx context.Context, event Event) error {
 		b.lastError = err.Error()
 		b.mu.Unlock()
 
-		b.logger.Error("failed to publish event",
+		b.logger.ErrorCtx(ctx,
+			"failed to publish event",
+			err,
 			slog.String("type", event.Type()),
-			slog.String("id", event.ID()),
-			slog.String("error", err.Error()))
+			slog.String("id", event.ID()))
 		return fmt.Errorf("failed to publish event: %w", err)
 	}
 
@@ -113,7 +117,8 @@ func (b *gookitEventBus) SubscribeWithPriority(eventType string, handler EventHa
 	// Track our handler
 	b.subscribers[eventType] = append(b.subscribers[eventType], handler)
 
-	b.logger.Debug("subscribed to event type",
+	b.logger.DebugContext(context.Background(),
+		"subscribed to event type",
 		slog.String("type", eventType),
 		slog.Int("priority", int(priority)))
 
@@ -151,7 +156,8 @@ func (b *gookitEventBus) Unsubscribe(eventType string, handler EventHandler) err
 		delete(b.subscribers, eventType)
 	}
 
-	b.logger.Debug("unsubscribed from event type",
+	b.logger.DebugContext(context.Background(),
+		"unsubscribed from event type",
 		slog.String("type", eventType))
 
 	return nil
@@ -166,7 +172,7 @@ func (b *gookitEventBus) Close() error {
 		return nil
 	}
 
-	b.logger.Debug("closing event bus")
+	b.logger.DebugContext(context.Background(), "closing event bus")
 
 	// Clear all subscribers
 	b.subscribers = make(map[string][]EventHandler)

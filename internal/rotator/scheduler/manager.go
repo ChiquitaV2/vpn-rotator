@@ -2,10 +2,11 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 	"sync"
 	"time"
+
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // SchedulerManager defines the interface for scheduler lifecycle management
@@ -24,7 +25,7 @@ type VPNService interface {
 // UnifiedManager manages a single unified scheduler for both rotation and cleanup operations
 type UnifiedManager struct {
 	scheduler *UnifiedScheduler
-	logger    *slog.Logger
+	logger    *applogger.Logger // <-- Changed
 
 	// Internal state for lifecycle management
 	ctx     context.Context
@@ -37,11 +38,13 @@ type UnifiedManager struct {
 func NewUnifiedManager(
 	rotationInterval, cleanupInterval, cleanupAge time.Duration,
 	vpnService VPNService,
-	logger *slog.Logger,
+	logger *applogger.Logger, // <-- Changed
 ) *UnifiedManager {
+	scopedLogger := logger.WithComponent("scheduler.manager")
 	return &UnifiedManager{
-		scheduler: NewUnifiedScheduler(rotationInterval, cleanupInterval, cleanupAge, vpnService, logger),
-		logger:    logger,
+		// Assumes NewUnifiedScheduler now accepts *applogger.Logger
+		scheduler: NewUnifiedScheduler(rotationInterval, cleanupInterval, cleanupAge, vpnService, scopedLogger),
+		logger:    scopedLogger,
 	}
 }
 
@@ -51,22 +54,24 @@ func (m *UnifiedManager) Start(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	if m.running {
-		m.logger.Warn("scheduler manager is already running")
+		m.logger.WarnContext(ctx, "scheduler manager is already running")
 		return nil
 	}
 
-	m.logger.Info("starting scheduler manager")
+	m.logger.InfoContext(ctx, "starting scheduler manager")
 
 	// Create a new context for the scheduler
 	m.ctx, m.cancel = context.WithCancel(ctx)
 
 	// Start unified scheduler
 	if err := m.scheduler.Start(m.ctx); err != nil {
-		return fmt.Errorf("failed to start scheduler: %w", err)
+		domainErr := apperrors.NewSystemError(apperrors.ErrCodeInternal, "failed to start scheduler", false, err)
+		m.logger.ErrorCtx(ctx, "failed to start scheduler", domainErr)
+		return domainErr
 	}
 
 	m.running = true
-	m.logger.Info("scheduler manager started successfully")
+	m.logger.InfoContext(ctx, "scheduler manager started successfully")
 	return nil
 }
 
@@ -76,11 +81,11 @@ func (m *UnifiedManager) Stop(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	if !m.running {
-		m.logger.Warn("scheduler manager is not running")
+		m.logger.WarnContext(ctx, "scheduler manager is not running")
 		return nil
 	}
 
-	m.logger.Info("stopping scheduler manager")
+	m.logger.InfoContext(ctx, "stopping scheduler manager")
 
 	// Cancel the scheduler context to signal shutdown
 	if m.cancel != nil {
@@ -89,12 +94,14 @@ func (m *UnifiedManager) Stop(ctx context.Context) error {
 
 	// Stop the unified scheduler
 	if err := m.scheduler.Stop(ctx); err != nil {
-		m.logger.Error("failed to stop scheduler", "error", err)
-		return err
+		// Log the error as a domain error
+		domainErr := apperrors.WrapWithDomain(err, apperrors.DomainSystem, apperrors.ErrCodeInternal, "failed to stop scheduler gracefully", false)
+		m.logger.ErrorCtx(ctx, "failed to stop scheduler", domainErr)
+		return domainErr
 	}
 
 	m.running = false
-	m.logger.Info("scheduler manager stopped successfully")
+	m.logger.InfoContext(ctx, "scheduler manager stopped successfully")
 	return nil
 }
 

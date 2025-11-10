@@ -2,223 +2,322 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"time"
 
+	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/lmittmann/tint"
 )
 
-// ContextKey is the type for context keys used in logging
-type ContextKey string
-
-const (
-	// RequestIDKey is the context key for request IDs
-	RequestIDKey ContextKey = "request_id"
-	// NodeIDKey is the context key for node IDs
-	NodeIDKey ContextKey = "node_id"
-	// OperationKey is the context key for operation names
-	OperationKey ContextKey = "operation"
-)
-
-// Logger wraps slog.Logger with additional helper methods
+// Logger wraps slog.Logger with domain-specific helpers while staying thin
 type Logger struct {
 	*slog.Logger
+	config LoggerConfig
 }
 
-// New creates a new Logger with the specified level and format
-func New(level, format string) *Logger {
-	var handler slog.Handler
+// LogLevel represents the logging level
+type LogLevel string
 
-	// Parse level
-	var logLevel slog.Level
-	switch level {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "info":
-		logLevel = slog.LevelInfo
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	default:
-		logLevel = slog.LevelInfo
-	}
+const (
+	LevelTrace LogLevel = "trace"
+	LevelDebug LogLevel = "debug"
+	LevelInfo  LogLevel = "info"
+	LevelWarn  LogLevel = "warn"
+	LevelError LogLevel = "error"
+)
 
-	opts := &slog.HandlerOptions{
-		Level: logLevel,
-	}
+// OutputFormat represents the log output format
+type OutputFormat string
 
-	timeFormat := time.RFC3339
-	if logLevel == slog.LevelDebug {
-		timeFormat = time.Kitchen
+const (
+	FormatJSON OutputFormat = "json"
+	FormatText OutputFormat = "text"
+)
+
+// LoggerConfig holds configuration for the logger
+type LoggerConfig struct {
+	Level      LogLevel     `mapstructure:"level" yaml:"level" json:"level"`
+	Format     OutputFormat `mapstructure:"format" yaml:"format" json:"format"`
+	AddSource  bool         `mapstructure:"add_source" yaml:"add_source" json:"add_source"`
+	Component  string       `mapstructure:"component" yaml:"component" json:"component"`
+	Version    string       `mapstructure:"version" yaml:"version" json:"version"`
+	TimeFormat string       `mapstructure:"time_format" yaml:"time_format" json:"time_format"`
+}
+
+// DefaultConfig returns a sensible default configuration
+func DefaultConfig() LoggerConfig {
+	return LoggerConfig{
+		Level:      LevelInfo,
+		Format:     FormatText,
+		AddSource:  false,
+		Component:  "vpn-rotator",
+		Version:    "unknown",
+		TimeFormat: time.RFC3339,
 	}
-	// Create handler based on format
-	if format == "json" {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
-	} else {
-		handler = tint.NewHandler(os.Stdout, &tint.Options{
-			Level:      logLevel,
-			TimeFormat: timeFormat,
-			AddSource:  logLevel == slog.LevelDebug,
-		})
-		//handler = slog.NewTextHandler(os.Stdout, opts)
-	}
+}
+
+// New creates a new logger with the provided configuration
+func New(config LoggerConfig) *Logger {
+	level := parseLogLevel(config.Level)
+	handler := createHandler(config, level)
+
+	slogger := slog.New(handler)
 
 	return &Logger{
-		Logger: slog.New(handler),
+		Logger: slogger,
+		config: config,
 	}
 }
 
-// WithRequestID returns a new logger with the request ID in context
-func (l *Logger) WithRequestID(requestID string) *Logger {
+// NewDevelopment creates a logger optimized for development
+func NewDevelopment(component string) *Logger {
+	return New(LoggerConfig{
+		Level:      LevelDebug,
+		Format:     FormatText,
+		AddSource:  true,
+		Component:  component,
+		Version:    "dev",
+		TimeFormat: time.Kitchen,
+	})
+}
+
+// NewProduction creates a logger optimized for production
+func NewProduction(component, version string) *Logger {
+	return New(LoggerConfig{
+		Level:      LevelInfo,
+		Format:     FormatJSON,
+		AddSource:  false,
+		Component:  component,
+		Version:    version,
+		TimeFormat: time.RFC3339,
+	})
+}
+
+// Context keys for structured logging
+type contextKey string
+
+const (
+	RequestIDKey   contextKey = "request_id"
+	CorrelationKey contextKey = "correlation_id"
+	NodeIDKey      contextKey = "node_id"
+	PeerIDKey      contextKey = "peer_id"
+	OperationKey   contextKey = "operation"
+	TraceIDKey     contextKey = "trace_id"
+	SpanIDKey      contextKey = "span_id"
+	UserIDKey      contextKey = "user_id"
+)
+
+// Core logger methods that add value over raw slog
+
+// With returns a new logger with additional attributes
+func (l *Logger) With(args ...any) *Logger {
 	return &Logger{
-		Logger: l.Logger.With(slog.String("request_id", requestID)),
+		Logger: l.Logger.With(args...),
+		config: l.config,
 	}
 }
 
-// WithNodeID returns a new logger with the node ID in context
-func (l *Logger) WithNodeID(nodeID string) *Logger {
+// WithComponent returns a logger scoped to a sub-component (hierarchical)
+func (l *Logger) WithComponent(name string) *Logger {
+	l.config.Component = name
 	return &Logger{
-		Logger: l.Logger.With(slog.String("node_id", nodeID)),
+		Logger: l.Logger,
+		config: l.config,
 	}
 }
 
-// WithOperation returns a new logger with the operation name in context
-func (l *Logger) WithOperation(operation string) *Logger {
-	return &Logger{
-		Logger: l.Logger.With(slog.String("operation", operation)),
-	}
-}
-
-// WithContext extracts common fields from context and returns a new logger
+// WithContext extracts logging context and returns a scoped logger
 func (l *Logger) WithContext(ctx context.Context) *Logger {
-	logger := l.Logger
-
-	// Extract request ID
-	if requestID, ok := ctx.Value(RequestIDKey).(string); ok && requestID != "" {
-		logger = logger.With(slog.String("request_id", requestID))
+	attrs := extractContextAttrs(ctx)
+	attrs = append(attrs, slog.String("component", l.config.Component))
+	attrs = append(attrs, slog.String("version", l.config.Version))
+	if len(attrs) == 0 {
+		return l
 	}
 
-	// Extract node ID
-	if nodeID, ok := ctx.Value(NodeIDKey).(string); ok && nodeID != "" {
-		logger = logger.With(slog.String("node_id", nodeID))
-	}
-
-	// Extract operation
-	if operation, ok := ctx.Value(OperationKey).(string); ok && operation != "" {
-		logger = logger.With(slog.String("operation", operation))
-	}
-
-	return &Logger{Logger: logger}
-}
-
-// WithAttrs returns a new logger with the provided attributes
-func (l *Logger) WithAttrs(attrs ...slog.Attr) *Logger {
 	return &Logger{
 		Logger: l.Logger.With(attrsToAny(attrs)...),
+		config: l.config,
 	}
 }
 
-// InfoContext logs at Info level with context
-func (l *Logger) InfoContext(ctx context.Context, msg string, args ...any) {
-	l.WithContext(ctx).Info(msg, args...)
+// Unwrap returns the underlying slog.Logger for direct access
+func (l *Logger) Unwrap() *slog.Logger {
+	return l.Logger
 }
 
-// DebugContext logs at Debug level with context
-func (l *Logger) DebugContext(ctx context.Context, msg string, args ...any) {
-	l.WithContext(ctx).Debug(msg, args...)
+// Enhanced context-aware logging methods
+
+// ErrorCtx logs an error with automatic context enrichment
+// This is the main improvement - simplifies error logging
+func (l *Logger) ErrorCtx(ctx context.Context, msg string, err error, args ...any) {
+	attrs := []any{slog.String("error", err.Error())}
+
+	// Extract domain error details if available
+	if domainErr, ok := err.(errors.DomainError); ok {
+		attrs = append(attrs,
+			slog.String("error_domain", domainErr.Domain()),
+			slog.String("error_code", domainErr.Code()),
+			slog.Bool("retryable", domainErr.Retryable()),
+		)
+
+		// Add metadata
+		if metadata := domainErr.Metadata(); len(metadata) > 0 {
+			for k, v := range metadata {
+				attrs = append(attrs, slog.Any(k, v))
+			}
+		}
+	}
+
+	attrs = append(attrs, args...)
+	l.WithContext(ctx).Error(msg, attrs...)
 }
 
-// WarnContext logs at Warn level with context
-func (l *Logger) WarnContext(ctx context.Context, msg string, args ...any) {
-	l.WithContext(ctx).Warn(msg, args...)
+// Trace logs at trace level (maps to Debug with prefix)
+func (l *Logger) Trace(msg string, args ...any) {
+	if l.config.Level == LevelTrace {
+		l.Debug(msg, args...)
+	}
 }
 
-// ErrorContext logs at Error level with context
-func (l *Logger) ErrorContext(ctx context.Context, msg string, args ...any) {
-	l.WithContext(ctx).Error(msg, args...)
+// TraceCtx logs at trace level with context
+func (l *Logger) TraceCtx(ctx context.Context, msg string, args ...any) {
+	if l.config.Level == LevelTrace {
+		l.WithContext(ctx).Debug(msg, args...)
+	}
 }
 
-// LogProvisionStart logs the start of a provisioning operation
-func (l *Logger) LogProvisionStart(ctx context.Context, serverName string) {
-	l.WithContext(ctx).Info("starting node provisioning",
-		slog.String("server_name", serverName),
-	)
+// Domain-specific helpers (these add real value)
+
+// HTTPRequest logs HTTP request/response with smart level selection
+func (l *Logger) HTTPRequest(ctx context.Context, method, path string, status int, duration time.Duration, args ...any) {
+	level := slog.LevelInfo
+	if status >= 500 {
+		level = slog.LevelError
+	} else if status >= 400 {
+		level = slog.LevelWarn
+	}
+
+	attrs := []any{
+		slog.String("http_method", method),
+		slog.String("http_path", path),
+		slog.Int("http_status", status),
+		slog.Duration("duration_ms", duration),
+	}
+	attrs = append(attrs, args...)
+
+	msg := fmt.Sprintf("%s %s %d", method, path, status)
+	l.WithContext(ctx).Log(ctx, level, msg, attrs...)
 }
 
-// LogProvisionSuccess logs successful provisioning
-func (l *Logger) LogProvisionSuccess(ctx context.Context, nodeID, ip string) {
-	l.WithContext(ctx).Info("node provisioned successfully",
-		slog.String("node_id", nodeID),
-		slog.String("ip", ip),
-	)
+// DBQuery logs database operations with slow query detection
+func (l *Logger) DBQuery(ctx context.Context, operation, table string, duration time.Duration, args ...any) {
+	attrs := []any{
+		slog.String("db_operation", operation),
+		slog.String("db_table", table),
+		slog.Duration("duration_ms", duration),
+	}
+	attrs = append(attrs, args...)
+
+	msg := fmt.Sprintf("%s %s", operation, table)
+
+	// Warn on slow queries
+	if duration > 100*time.Millisecond {
+		l.WithContext(ctx).Warn(msg+" (slow)", attrs...)
+	} else {
+		l.WithContext(ctx).Debug(msg, attrs...)
+	}
 }
 
-// LogProvisionFailure logs failed provisioning
-func (l *Logger) LogProvisionFailure(ctx context.Context, stage string, err error) {
-	l.WithContext(ctx).Error("provisioning failed",
-		slog.String("stage", stage),
-		slog.String("error", err.Error()),
-	)
+// StackTrace logs a stack trace for debugging (debug level only)
+func (l *Logger) StackTrace(ctx context.Context, msg string) {
+	if l.config.Level != LevelDebug && l.config.Level != LevelTrace {
+		return
+	}
+
+	buf := make([]byte, 4096)
+	n := runtime.Stack(buf, false)
+
+	l.WithContext(ctx).Debug(msg, slog.String("stack", string(buf[:n])))
 }
 
-// LogRotationStart logs the start of rotation
-func (l *Logger) LogRotationStart(ctx context.Context, oldNodeID string) {
-	l.WithContext(ctx).Info("starting node rotation",
-		slog.String("old_node_id", oldNodeID),
-	)
+// Helper functions
+
+func parseLogLevel(level LogLevel) slog.Level {
+	switch level {
+	case LevelTrace, LevelDebug:
+		return slog.LevelDebug
+	case LevelInfo:
+		return slog.LevelInfo
+	case LevelWarn:
+		return slog.LevelWarn
+	case LevelError:
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
-// LogRotationSuccess logs successful rotation
-func (l *Logger) LogRotationSuccess(ctx context.Context, oldNodeID, newNodeID string) {
-	l.WithContext(ctx).Info("node rotation completed",
-		slog.String("old_node_id", oldNodeID),
-		slog.String("new_node_id", newNodeID),
-	)
+func createHandler(config LoggerConfig, level slog.Level) slog.Handler {
+	opts := &slog.HandlerOptions{
+		Level:     level,
+		AddSource: config.AddSource,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Simplify time in development
+			if a.Key == slog.TimeKey && config.Format == FormatText {
+				return slog.Attr{
+					Key:   "time",
+					Value: slog.StringValue(a.Value.Time().Format(config.TimeFormat)),
+				}
+			}
+			return a
+		},
+	}
+
+	switch config.Format {
+	case FormatJSON:
+		return slog.NewJSONHandler(os.Stdout, opts)
+	case FormatText:
+		return tint.NewHandler(os.Stdout, &tint.Options{
+			Level:      level,
+			TimeFormat: config.TimeFormat,
+			AddSource:  config.AddSource,
+			NoColor:    false,
+		})
+	default:
+		return slog.NewJSONHandler(os.Stdout, opts)
+	}
 }
 
-// LogRotationFailure logs failed rotation
-func (l *Logger) LogRotationFailure(ctx context.Context, oldNodeID string, err error) {
-	l.WithContext(ctx).Error("rotation failed",
-		slog.String("old_node_id", oldNodeID),
-		slog.String("error", err.Error()),
-	)
+func extractContextAttrs(ctx context.Context) []slog.Attr {
+	var attrs []slog.Attr
+
+	// Extract all known context values
+	contextKeys := []contextKey{
+		RequestIDKey, CorrelationKey, NodeIDKey, PeerIDKey,
+		OperationKey, TraceIDKey, SpanIDKey, UserIDKey,
+	}
+
+	for _, key := range contextKeys {
+		if val := getFromContext[string](ctx, key); val != "" {
+			attrs = append(attrs, slog.String(string(key), val))
+		}
+	}
+
+	return attrs
 }
 
-// LogDestructionStart logs the start of node destruction
-func (l *Logger) LogDestructionStart(ctx context.Context, nodeID string) {
-	l.WithContext(ctx).Info("starting node destruction",
-		slog.String("node_id", nodeID),
-	)
+func getFromContext[T any](ctx context.Context, key contextKey) T {
+	if val, ok := ctx.Value(key).(T); ok {
+		return val
+	}
+	var zero T
+	return zero
 }
 
-// LogDestructionSuccess logs successful destruction
-func (l *Logger) LogDestructionSuccess(ctx context.Context, nodeID string) {
-	l.WithContext(ctx).Info("node destroyed successfully",
-		slog.String("node_id", nodeID),
-	)
-}
-
-// LogHTTPRequest logs an HTTP request
-func (l *Logger) LogHTTPRequest(ctx context.Context, method, path string, statusCode int, duration int64) {
-	l.WithContext(ctx).Info("http request",
-		slog.String("method", method),
-		slog.String("path", path),
-		slog.Int("status", statusCode),
-		slog.Int64("duration_ms", duration),
-	)
-}
-
-// LogDatabaseQuery logs a database query (for debugging)
-func (l *Logger) LogDatabaseQuery(ctx context.Context, query string, duration int64) {
-	l.WithContext(ctx).Debug("database query",
-		slog.String("query", query),
-		slog.Int64("duration_ms", duration),
-	)
-}
-
-// Helper function to convert slog.Attr to []any
 func attrsToAny(attrs []slog.Attr) []any {
 	result := make([]any, len(attrs))
 	for i, attr := range attrs {
@@ -227,25 +326,70 @@ func attrsToAny(attrs []slog.Attr) []any {
 	return result
 }
 
-// AddRequestIDToContext adds a request ID to the context
-func AddRequestIDToContext(ctx context.Context, requestID string) context.Context {
-	return context.WithValue(ctx, RequestIDKey, requestID)
+// Context helper functions for adding IDs to context
+
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, RequestIDKey, id)
 }
 
-// AddNodeIDToContext adds a node ID to the context
-func AddNodeIDToContext(ctx context.Context, nodeID string) context.Context {
-	return context.WithValue(ctx, NodeIDKey, nodeID)
+func WithCorrelationID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, CorrelationKey, id)
 }
 
-// AddOperationToContext adds an operation name to the context
-func AddOperationToContext(ctx context.Context, operation string) context.Context {
+func WithNodeID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, NodeIDKey, id)
+}
+
+func WithPeerID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, PeerIDKey, id)
+}
+
+func WithOperation(ctx context.Context, operation string) context.Context {
 	return context.WithValue(ctx, OperationKey, operation)
 }
 
-// GetRequestIDFromContext retrieves the request ID from context
-func GetRequestIDFromContext(ctx context.Context) string {
-	if requestID, ok := ctx.Value(RequestIDKey).(string); ok {
-		return requestID
-	}
-	return ""
+func WithTraceID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, TraceIDKey, id)
+}
+
+func WithSpanID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, SpanIDKey, id)
+}
+
+func WithUserID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, UserIDKey, id)
+}
+
+// Getters for context values
+
+func GetRequestID(ctx context.Context) string {
+	return getFromContext[string](ctx, RequestIDKey)
+}
+
+func GetCorrelationID(ctx context.Context) string {
+	return getFromContext[string](ctx, CorrelationKey)
+}
+
+func GetNodeID(ctx context.Context) string {
+	return getFromContext[string](ctx, NodeIDKey)
+}
+
+func GetPeerID(ctx context.Context) string {
+	return getFromContext[string](ctx, PeerIDKey)
+}
+
+func GetOperation(ctx context.Context) string {
+	return getFromContext[string](ctx, OperationKey)
+}
+
+func GetTraceID(ctx context.Context) string {
+	return getFromContext[string](ctx, TraceIDKey)
+}
+
+func GetSpanID(ctx context.Context) string {
+	return getFromContext[string](ctx, SpanIDKey)
+}
+
+func GetUserID(ctx context.Context) string {
+	return getFromContext[string](ctx, UserIDKey)
 }

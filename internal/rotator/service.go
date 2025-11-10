@@ -14,6 +14,8 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // SchedulerManager defines the interface for scheduler operations
@@ -35,7 +37,7 @@ type Service struct {
 	components *ServiceComponents
 	scheduler  SchedulerManager
 	apiServer  APIServer
-	logger     *slog.Logger
+	logger     *logger.Logger
 
 	// Internal state for lifecycle management
 	ctx    context.Context
@@ -50,7 +52,7 @@ type Service struct {
 }
 
 // NewService creates a new Service instance using the layered architecture
-func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
+func NewService(cfg *config.Config, logger *logger.Logger) (*Service, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	service := &Service{
@@ -146,10 +148,10 @@ func (s *Service) Start(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	if s.isRunning {
-		return fmt.Errorf("service is already running")
+		return errors.NewSystemError(errors.ErrCodeValidation, "service is already running", false, nil)
 	}
 
-	s.logger.Info("starting rotator service")
+	op := s.logger.StartOp(ctx, "service_start")
 
 	// Set up signal handling for graceful shutdown (unless disabled for testing)
 	if !s.disableSignalHandling {
@@ -159,31 +161,45 @@ func (s *Service) Start(ctx context.Context) error {
 	// Start components in dependency order
 	// 1. Start provisioning orchestrator worker if available
 	if s.components.ProvisioningOrchestrator != nil {
+		op.Progress("starting component", slog.String("component", "provisioning_orchestrator"))
+
 		s.components.ProvisioningOrchestrator.StartWorker(s.ctx)
-		s.logger.Info("provisioning orchestrator worker started")
+		s.logger.InfoContext(ctx, "provisioning orchestrator worker started")
 	}
 
 	// 2. manager is a dependency for scheduler, so it should be ready first
-	s.logger.Info("orchestrator ready (no startup required)")
+	s.logger.InfoContext(ctx, "orchestrator ready (no startup required)")
 
 	// 3. Start scheduler (depends on orchestrator)
+	op.Progress("starting component", slog.String("component", "scheduler"))
+
 	if err := s.scheduler.Start(s.ctx); err != nil {
-		return fmt.Errorf("failed to start scheduler: %w", err)
+		schedulerErr := errors.NewSystemError(errors.ErrCodeInternal, "failed to start scheduler", true, err)
+		s.logger.ErrorCtx(ctx, "scheduler startup failed", schedulerErr)
+		op.Fail(schedulerErr, "scheduler startup failed")
+		return schedulerErr
 	}
-	s.logger.Info("scheduler started successfully")
+	s.logger.InfoContext(ctx, "scheduler started successfully")
 
 	// 4. Start API server (depends on orchestrator)
+	op.Progress("starting component", slog.String("component", "api_server"))
+
 	if err := s.apiServer.Start(s.ctx); err != nil {
+		apiErr := errors.NewSystemError(errors.ErrCodeInternal, "failed to start API server", true, err)
+		s.logger.ErrorCtx(ctx, "API server startup failed", apiErr)
+
 		// If API server fails, stop scheduler before returning error
 		if stopErr := s.scheduler.Stop(s.ctx); stopErr != nil {
-			s.logger.Error("failed to stop scheduler during cleanup", "error", stopErr)
+			cleanupErr := errors.NewSystemError(errors.ErrCodeInternal, "failed to stop scheduler during cleanup", false, stopErr)
+			s.logger.ErrorCtx(ctx, "cleanup failed during API server startup failure", cleanupErr)
 		}
-		return fmt.Errorf("failed to start API server: %w", err)
+
+		op.Fail(apiErr, "api server startup failed")
+		return apiErr
 	}
-	s.logger.Info("API server started successfully")
 
 	s.isRunning = true
-	s.logger.Info("rotator service started successfully")
+	op.Complete("rotator service started successfully")
 	return nil
 }
 
@@ -203,7 +219,8 @@ func (s *Service) handleSignals() {
 
 	select {
 	case sig := <-s.signalChan:
-		s.logger.Info("received shutdown signal", "signal", sig.String())
+		signalCtx := logger.WithOperation(context.Background(), "signal_handling")
+		s.logger.InfoContext(signalCtx, "received shutdown signal", "signal", sig.String())
 
 		// Create shutdown context with timeout
 		shutdownTimeout := 30 * time.Second
@@ -211,17 +228,23 @@ func (s *Service) handleSignals() {
 			shutdownTimeout = s.config.Service.ShutdownTimeout
 		}
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(signalCtx, shutdownTimeout)
 		defer cancel()
+
+		shutdownOp := s.logger.StartOp(shutdownCtx, "graceful_shutdown", slog.String("trigger", "signal"), slog.String("signal", sig.String()))
 
 		// Initiate graceful shutdown
 		if err := s.Stop(shutdownCtx); err != nil {
-			s.logger.Error("error during graceful shutdown", "error", err)
+			s.logger.ErrorCtx(shutdownCtx, "error during graceful shutdown", err)
+			shutdownOp.Fail(err, "graceful shutdown failed")
+		} else {
+			shutdownOp.Complete("graceful shutdown completed successfully")
 		}
 
 	case <-s.ctx.Done():
 		// Service context was cancelled, exit gracefully
-		s.logger.Debug("signal handler exiting due to service context cancellation")
+		cancelCtx := logger.WithOperation(context.Background(), "context_cancellation")
+		s.logger.DebugContext(cancelCtx, "signal handler exiting due to service context cancellation")
 	}
 }
 
@@ -241,11 +264,11 @@ func (s *Service) Stop(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	if !s.isRunning {
-		s.logger.Warn("service is not running")
+		s.logger.WarnContext(ctx, "service is not running")
 		return nil
 	}
 
-	s.logger.Info("stopping rotator service")
+	op := s.logger.StartOp(ctx, "service_stop")
 
 	// Create shutdown timeout context if not already provided
 	shutdownCtx := ctx
@@ -271,65 +294,75 @@ func (s *Service) Stop(ctx context.Context) error {
 	// Stop components in reverse dependency order
 	// 1. Stop API server first (external interface)
 	if s.apiServer != nil {
-		s.logger.Info("stopping API server")
+		op.Progress("stopping component", slog.String("component", "api_server"))
+
 		if err := s.apiServer.Stop(shutdownCtx); err != nil {
-			s.logger.Error("failed to stop API server", "error", err)
-			lastErr = err
+			apiErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal, "failed to stop API server", false)
+			s.logger.ErrorCtx(shutdownCtx, "API server shutdown failed", apiErr)
+			lastErr = apiErr
 		} else {
-			s.logger.Info("API server stopped successfully")
+			s.logger.InfoContext(shutdownCtx, "API server stopped successfully")
 		}
 	}
 
 	// 2. Stop scheduler
 	if s.scheduler != nil {
-		s.logger.Info("stopping scheduler")
+		op.Progress("stopping component", slog.String("component", "scheduler"))
+
 		if err := s.scheduler.Stop(shutdownCtx); err != nil {
-			s.logger.Error("failed to stop scheduler", "error", err)
-			lastErr = err
+			schedulerErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal, "failed to stop scheduler", false)
+			s.logger.ErrorCtx(shutdownCtx, "scheduler shutdown failed", schedulerErr)
+			lastErr = schedulerErr
 		} else {
-			s.logger.Info("scheduler stopped successfully")
+			s.logger.InfoContext(shutdownCtx, "scheduler stopped successfully")
 		}
 	}
 
 	// 3. Clean up active nodes before shutdown
 	if s.components.VPNService != nil {
-		s.logger.Info("cleaning up active nodes")
+		op.Progress("stopping component", slog.String("component", "node_cleanup"))
+
 		if err := s.cleanupActiveNodes(shutdownCtx); err != nil {
-			s.logger.Error("failed to cleanup active nodes", "error", err)
-			lastErr = err
+			cleanupErr := errors.WrapWithDomain(err, errors.DomainNode, errors.ErrCodeInternal, "failed to cleanup active nodes", false)
+			s.logger.ErrorCtx(shutdownCtx, "node cleanup failed", cleanupErr)
+			lastErr = cleanupErr
 		} else {
-			s.logger.Info("active nodes cleaned up successfully")
+			s.logger.InfoContext(shutdownCtx, "active nodes cleaned up successfully")
 		}
 	}
 
 	// 4. Close event bus
 	if s.components != nil && s.components.EventBus != nil {
-		s.logger.Info("closing event bus")
+		op.Progress("stopping component", slog.String("component", "event_bus"))
+
 		if err := s.components.EventBus.Close(); err != nil {
-			s.logger.Error("failed to close event bus", "error", err)
-			lastErr = err
+			eventErr := errors.WrapWithDomain(err, errors.DomainEvent, errors.ErrCodeInternal, "failed to close event bus", false)
+			s.logger.ErrorCtx(shutdownCtx, "event bus shutdown failed", eventErr)
+			lastErr = eventErr
 		} else {
-			s.logger.Info("event bus closed successfully")
+			s.logger.InfoContext(shutdownCtx, "event bus closed successfully")
 		}
 	}
 
 	// 5. Close database store
 	if s.components != nil && s.components.Store != nil {
-		s.logger.Info("closing database store")
+		op.Progress("stopping component", slog.String("component", "database_store"))
+
 		if err := s.components.Store.Close(); err != nil {
-			s.logger.Error("failed to close database store", "error", err)
-			lastErr = err
+			dbErr := errors.WrapWithDomain(err, errors.DomainDatabase, errors.ErrCodeDatabase, "failed to close database store", false)
+			s.logger.ErrorCtx(shutdownCtx, "database store shutdown failed", dbErr)
+			lastErr = dbErr
 		} else {
-			s.logger.Info("database store closed successfully")
+			s.logger.InfoContext(shutdownCtx, "database store closed successfully")
 		}
 	}
 
 	// 6. Cancel service context to signal any remaining goroutines
 	s.cancel()
-	s.logger.Info("service context cancelled")
+	s.logger.InfoContext(shutdownCtx, "service context cancelled")
 
 	// 7. Wait for all background goroutines to finish
-	s.logger.Debug("waiting for background goroutines to finish")
+	s.logger.DebugContext(shutdownCtx, "waiting for background goroutines to finish")
 	done := make(chan struct{})
 	go func() {
 		s.shutdownWg.Wait()
@@ -338,21 +371,23 @@ func (s *Service) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
-		s.logger.Debug("all background goroutines finished")
+		s.logger.DebugContext(shutdownCtx, "all background goroutines finished")
 	case <-shutdownCtx.Done():
-		s.logger.Warn("timeout waiting for background goroutines to finish")
+		timeoutErr := errors.NewSystemError(errors.ErrCodeTimeout, "timeout waiting for background goroutines to finish", false, shutdownCtx.Err())
+		s.logger.ErrorCtx(shutdownCtx, "shutdown timeout reached", timeoutErr)
 		if lastErr == nil {
-			lastErr = shutdownCtx.Err()
+			lastErr = timeoutErr
 		}
 	}
 
 	s.isRunning = false
 
 	if lastErr != nil {
-		return fmt.Errorf("service shutdown completed with errors: %w", lastErr)
+		op.Fail(lastErr, "service shutdown completed with errors")
+		return errors.WrapWithDomain(lastErr, errors.DomainSystem, errors.ErrCodeInternal, "service shutdown completed with errors", false)
 	}
 
-	s.logger.Info("rotator service stopped successfully")
+	op.Complete("rotator service stopped successfully")
 	return nil
 }
 
@@ -361,19 +396,21 @@ func (s *Service) Health() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	ctx := logger.WithOperation(context.Background(), "service_health_check")
+
 	if !s.isRunning {
-		return fmt.Errorf("service is not running")
+		return errors.NewSystemError(errors.ErrCodeValidation, "service is not running", false, nil)
 	}
 
 	// Check if the service context is still active
 	select {
 	case <-s.ctx.Done():
-		return fmt.Errorf("service context cancelled")
+		return errors.NewSystemError(errors.ErrCodeInternal, "service context cancelled", false, s.ctx.Err())
 	default:
 		// Optionally check database connectivity
 		if s.components != nil && s.components.Store != nil {
-			if err := s.components.Store.Ping(context.Background()); err != nil {
-				return fmt.Errorf("database health check failed: %w", err)
+			if err := s.components.Store.Ping(ctx); err != nil {
+				return errors.WrapWithDomain(err, errors.DomainDatabase, errors.ErrCodeDatabase, "database health check failed", true)
 			}
 		}
 		return nil
@@ -398,32 +435,52 @@ func (s *Service) cleanupActiveNodes(ctx context.Context) error {
 		return nil
 	}
 
+	op := s.logger.StartOp(ctx, "node_cleanup")
+
 	// Get all active nodes using node service
 	activeNodes, err := s.components.NodeService.ListNodes(ctx, node.Filters{})
 	if err != nil {
-		return fmt.Errorf("failed to get active nodes: %w", err)
+		listErr := errors.WrapWithDomain(err, errors.DomainNode, errors.ErrCodeInternal, "failed to get active nodes", true)
+		s.logger.ErrorCtx(ctx, "failed to list active nodes for cleanup", listErr)
+		op.Fail(listErr, "failed to list active nodes for cleanup")
+		return listErr
 	}
 
 	if len(activeNodes) == 0 {
-		s.logger.Debug("no active nodes to cleanup")
+		s.logger.DebugContext(ctx, "no active nodes to cleanup")
+		op.Complete("no active nodes found for cleanup")
 		return nil
 	}
 
-	s.logger.Info("cleaning up active nodes", slog.Int("count", len(activeNodes)))
+	s.logger.InfoContext(ctx, "cleaning up active nodes", "count", len(activeNodes))
+	op.With(slog.Int("nodes_count", len(activeNodes)))
 
 	var lastErr error
-	for _, activeNode := range activeNodes {
-		s.logger.Info("destroying active node", slog.String("node_id", activeNode.ID))
+	successCount := 0
 
-		if err := s.components.NodeService.DestroyNode(ctx, activeNode.ID); err != nil {
-			s.logger.Error("failed to destroy active node",
-				slog.String("node_id", activeNode.ID),
-				slog.String("error", err.Error()))
-			lastErr = err
+	for _, activeNode := range activeNodes {
+		nodeCtx := logger.WithNodeID(ctx, activeNode.ID)
+		s.logger.InfoContext(nodeCtx, "destroying active node", "node_id", activeNode.ID)
+
+		if err := s.components.NodeService.DestroyNode(nodeCtx, activeNode.ID); err != nil {
+			destroyErr := errors.WrapWithDomain(err, errors.DomainNode, errors.ErrCodeDestructionFailed, "failed to destroy active node", true)
+			destroyErr.(*errors.BaseError).WithMetadata("node_id", activeNode.ID)
+			s.logger.ErrorCtx(nodeCtx, "failed to destroy active node", destroyErr)
+			lastErr = destroyErr
 		} else {
-			s.logger.Info("destroyed active node", slog.String("node_id", activeNode.ID))
+			s.logger.InfoContext(nodeCtx, "destroyed active node", "node_id", activeNode.ID)
+			successCount++
 		}
 	}
 
-	return lastErr
+	op.With(slog.Int("success_count", successCount))
+	op.With(slog.Int("failure_count", len(activeNodes)-successCount))
+
+	if lastErr != nil {
+		op.Fail(lastErr, "node cleanup completed with errors")
+		return errors.WrapWithDomain(lastErr, errors.DomainNode, errors.ErrCodeInternal, "node cleanup completed with errors", false)
+	}
+
+	op.Complete("node cleanup completed successfully", slog.Int("success_count", successCount))
+	return nil
 }

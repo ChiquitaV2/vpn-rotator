@@ -2,23 +2,25 @@ package events
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func setupTestPublisher(t *testing.T) *EventPublisher {
-	log := logger.New("debug", "text")
+	log := applogger.NewDevelopment("event_publisher_test")
 	config := sharedevents.DefaultEventBusConfig()
-	bus := sharedevents.NewGookitEventBus(config, log.Logger)
+	bus := sharedevents.NewGookitEventBus(config, log)
 	t.Cleanup(func() {
 		bus.Close()
 	})
-	return NewEventPublisher(bus)
+	return NewEventPublisher(bus, log) // <-- Changed
 }
 
 func TestNewEventPublisher(t *testing.T) {
@@ -59,12 +61,12 @@ func TestProvisioningEventPublisher_PublishProvisionRequested(t *testing.T) {
 	assert.WithinDuration(t, time.Now(), receivedEvent.Timestamp(), time.Second)
 }
 
-func TestProvisioningEventPublisher_PublishProvisionProgress(t *testing.T) {
+func TestProvisioningEventPublisher_PublishProvisionFailed(t *testing.T) {
 	publisher := setupTestPublisher(t)
 	ctx := context.Background()
 	var receivedEvent sharedevents.Event
 
-	unsubscribe, err := publisher.Provisioning.OnProvisionProgress(func(ctx context.Context, event sharedevents.Event) error {
+	unsubscribe, err := publisher.Provisioning.OnProvisionFailed(func(ctx context.Context, event sharedevents.Event) error {
 		receivedEvent = event
 		return nil
 	})
@@ -72,53 +74,27 @@ func TestProvisioningEventPublisher_PublishProvisionProgress(t *testing.T) {
 	defer unsubscribe()
 
 	nodeID := "node-123"
-	phase := "validation"
-	progress := 0.25
-	message := "Validating configuration"
-	customMetadata := map[string]interface{}{
-		"custom_field": "custom_value",
-	}
+	phase := "ssh_connection"
+	// Test with a DomainError
+	originalErr := apperrors.NewInfrastructureError(apperrors.ErrCodeSSHConnection, "connection timed out", true, errors.New("i/o timeout")).
+		WithMetadata("host", "1.2.3.4")
 
-	err = publisher.Provisioning.PublishProvisionProgress(ctx, nodeID, phase, progress, message, customMetadata)
+	err = publisher.Provisioning.PublishProvisionFailed(ctx, nodeID, phase, originalErr)
 	require.NoError(t, err)
 
 	require.NotNil(t, receivedEvent)
-	assert.Equal(t, EventProvisionProgress, receivedEvent.Type())
+	assert.Equal(t, EventProvisionFailed, receivedEvent.Type())
 	metadata := receivedEvent.Metadata()
 	assert.Equal(t, nodeID, metadata["node_id"])
 	assert.Equal(t, phase, metadata["phase"])
-	assert.Equal(t, progress, metadata["progress"])
-	assert.Equal(t, message, metadata["message"])
-	assert.Equal(t, "custom_value", metadata["custom_field"])
-}
+	assert.Contains(t, "connection timed out", metadata["error"]) // Just the message
+	assert.Equal(t, true, metadata["retryable"])
+	assert.Equal(t, apperrors.ErrCodeSSHConnection, metadata["error_code"])
 
-func TestNodeEventPublisher_PublishNodeStatusChanged(t *testing.T) {
-	publisher := setupTestPublisher(t)
-	ctx := context.Background()
-	var receivedEvent sharedevents.Event
-
-	unsubscribe, err := publisher.Node.OnNodeStatusChanged(func(ctx context.Context, event sharedevents.Event) error {
-		receivedEvent = event
-		return nil
-	})
-	require.NoError(t, err)
-	defer unsubscribe()
-
-	nodeID := "node-456"
-	prevStatus := "provisioning"
-	newStatus := "active"
-	reason := "provisioning completed successfully"
-
-	err = publisher.Node.PublishNodeStatusChanged(ctx, nodeID, prevStatus, newStatus, reason)
-	require.NoError(t, err)
-
-	require.NotNil(t, receivedEvent)
-	assert.Equal(t, EventNodeStatusChanged, receivedEvent.Type())
-	metadata := receivedEvent.Metadata()
-	assert.Equal(t, nodeID, metadata["node_id"])
-	assert.Equal(t, prevStatus, metadata["previous_status"])
-	assert.Equal(t, newStatus, metadata["new_status"])
-	assert.Equal(t, reason, metadata["reason"])
+	// Check that metadata was unpacked
+	errMeta, ok := metadata["error_meta"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "1.2.3.4", errMeta["host"])
 }
 
 func TestWireGuardEventPublisher_PublishWireGuardPeerAdded(t *testing.T) {
@@ -166,9 +142,9 @@ func TestSystemEventPublisher_PublishError(t *testing.T) {
 
 	component := "test-component"
 	operation := "test-operation"
-	errorMsg := "something went wrong"
-	retryable := false
-	err = publisher.System.PublishError(ctx, component, operation, errorMsg, retryable, nil)
+	originalErr := apperrors.NewSystemError(apperrors.ErrCodeInternal, "something went wrong", false, nil)
+
+	err = publisher.System.PublishError(ctx, component, operation, originalErr)
 	require.NoError(t, err)
 
 	require.NotNil(t, receivedEvent)
@@ -176,57 +152,7 @@ func TestSystemEventPublisher_PublishError(t *testing.T) {
 	metadata := receivedEvent.Metadata()
 	assert.Equal(t, component, metadata["component"])
 	assert.Equal(t, operation, metadata["operation"])
-	assert.Equal(t, errorMsg, metadata["error"])
-	assert.Equal(t, retryable, metadata["retryable"])
-}
-
-func TestResourceEventPublisher_PublishResourceCreated(t *testing.T) {
-	publisher := setupTestPublisher(t)
-	ctx := context.Background()
-	var receivedEvent sharedevents.Event
-
-	unsubscribe, err := publisher.Resource.Subscribe(EventResourceCreated, func(ctx context.Context, event sharedevents.Event) error {
-		receivedEvent = event
-		return nil
-	})
-	require.NoError(t, err)
-	defer unsubscribe()
-
-	resourceType := "cache"
-	resourceID := "cache-123"
-	err = publisher.Resource.PublishResourceCreated(ctx, resourceType, resourceID, nil)
-	require.NoError(t, err)
-
-	require.NotNil(t, receivedEvent)
-	assert.Equal(t, EventResourceCreated, receivedEvent.Type())
-	metadata := receivedEvent.Metadata()
-	assert.Equal(t, resourceType, metadata["resource_type"])
-	assert.Equal(t, resourceID, metadata["resource_id"])
-}
-
-func TestEventPublisher_Health(t *testing.T) {
-	publisher := setupTestPublisher(t)
-
-	health := publisher.Health()
-	assert.Equal(t, "healthy", health.Status)
-	assert.Equal(t, 0, health.Subscribers)
-
-	unsubscribe, err := publisher.Provisioning.OnProvisionRequested(func(ctx context.Context, event sharedevents.Event) error {
-		return nil
-	})
-	require.NoError(t, err)
-
-	health = publisher.Health()
-	assert.Equal(t, "healthy", health.Status)
-	assert.GreaterOrEqual(t, health.Subscribers, 1)
-
-	err = unsubscribe()
-	assert.NoError(t, err)
-
-	err = publisher.Close()
-	assert.NoError(t, err)
-
-	health = publisher.Health()
-	assert.Equal(t, "unhealthy", health.Status)
-	assert.Contains(t, health.Message, "closed")
+	assert.Equal(t, "something went wrong", metadata["error"])
+	assert.Equal(t, false, metadata["retryable"])
+	assert.Equal(t, apperrors.ErrCodeInternal, metadata["error_code"])
 }

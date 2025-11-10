@@ -20,7 +20,7 @@ type ConfigGenerator struct {
 // NewConfigGenerator creates a new configuration generator.
 func NewConfigGenerator(log *logger.Logger) *ConfigGenerator {
 	if log == nil {
-		log = logger.New("info", "text")
+		log = logger.NewDevelopment("wireguard")
 	}
 
 	return &ConfigGenerator{

@@ -50,6 +50,7 @@ type PeerConfig struct {
 type LogConfig struct {
 	Level  string `mapstructure:"level"`  // debug, info, warn, error (default: info)
 	Format string `mapstructure:"format"` // json, text (default: json)
+
 }
 
 // APIConfig defines the API server configuration (ADVANCED)

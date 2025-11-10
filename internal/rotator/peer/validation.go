@@ -1,22 +1,24 @@
 package peer
 
 import (
-	"fmt"
 	"net"
 	"strings"
 	"sync"
 
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
 // ValidatePublicKey validates a WireGuard public key
 func ValidatePublicKey(publicKey string) error {
 	if strings.TrimSpace(publicKey) == "" {
-		return NewValidationError("public_key", "cannot be empty", publicKey)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "public_key cannot be empty", false, nil).
+			WithMetadata("public_key", publicKey)
 	}
 
 	if !crypto.IsValidWireGuardKey(publicKey) {
-		return NewValidationError("public_key", "invalid WireGuard key format", publicKey)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "invalid WireGuard key format", false, nil).
+			WithMetadata("public_key", publicKey)
 	}
 
 	return nil
@@ -29,7 +31,8 @@ func ValidatePresharedKey(presharedKey string) error {
 	}
 
 	if !crypto.IsValidWireGuardKey(presharedKey) {
-		return NewValidationError("preshared_key", "invalid WireGuard key format", presharedKey)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "invalid WireGuard key format", false, nil).
+			WithMetadata("preshared_key", "REDACTED")
 	}
 
 	return nil
@@ -59,7 +62,8 @@ func GetCacheSize() int {
 // ValidateIPAddress validates an IPv4 address with caching
 func ValidateIPAddress(ipAddr string) error {
 	if ipAddr == "" {
-		return NewValidationError("ip_address", "cannot be empty", ipAddr)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "ip_address cannot be empty", false, nil).
+			WithMetadata("ip_address", ipAddr)
 	}
 
 	// Check cache first
@@ -69,12 +73,14 @@ func ValidateIPAddress(ipAddr string) error {
 
 	parsedIP := net.ParseIP(ipAddr)
 	if parsedIP == nil {
-		return NewValidationError("ip_address", "invalid IP address format", ipAddr)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "invalid IP address format", false, nil).
+			WithMetadata("ip_address", ipAddr)
 	}
 
 	// Ensure it's IPv4
 	if parsedIP.To4() == nil {
-		return NewValidationError("ip_address", "must be IPv4", ipAddr)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "must be IPv4", false, nil).
+			WithMetadata("ip_address", ipAddr)
 	}
 
 	// Cache valid IP if caching is enabled and under limit
@@ -87,7 +93,8 @@ func ValidateIPAddress(ipAddr string) error {
 // ValidateNodeID validates a node ID
 func ValidateNodeID(nodeID string) error {
 	if strings.TrimSpace(nodeID) == "" {
-		return NewValidationError("node_id", "cannot be empty", nodeID)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "node_id cannot be empty", false, nil).
+			WithMetadata("node_id", nodeID)
 	}
 
 	return nil
@@ -96,16 +103,16 @@ func ValidateNodeID(nodeID string) error {
 // ValidateStatus validates a peer status
 func ValidateStatus(status Status) error {
 	if !status.IsValid() {
-		return NewValidationError("status", "invalid status", status)
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "invalid status", false, nil).
+			WithMetadata("status", status)
 	}
-
 	return nil
 }
 
 // ValidatePeer validates a complete peer entity
 func ValidatePeer(p *Peer) error {
 	if p == nil {
-		return fmt.Errorf("peer cannot be nil")
+		return apperrors.NewSystemError(apperrors.ErrCodeValidation, "peer cannot be nil", false, nil)
 	}
 
 	if err := ValidateNodeID(p.NodeID); err != nil {
@@ -136,7 +143,7 @@ func ValidatePeer(p *Peer) error {
 // ValidateCreateRequest validates a create request
 func ValidateCreateRequest(req *CreateRequest) error {
 	if req == nil {
-		return fmt.Errorf("create request cannot be nil")
+		return apperrors.NewSystemError(apperrors.ErrCodeValidation, "create request cannot be nil", false, nil)
 	}
 
 	if err := ValidateNodeID(req.NodeID); err != nil {

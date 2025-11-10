@@ -3,8 +3,10 @@ package ip
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
+
+	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	sharedLogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // Service provides IP and subnet management operations
@@ -30,13 +32,13 @@ type service struct {
 	subnetAllocator *SubnetAllocator
 	ipAllocator     *IPAllocator
 	config          *NetworkConfig
-	logger          *slog.Logger
+	logger          *sharedLogger.Logger
 }
 
 // NewService creates a new IP service
-func NewService(repo Repository, config *NetworkConfig, logger *slog.Logger) (Service, error) {
+func NewService(repo Repository, config *NetworkConfig, logger *sharedLogger.Logger) (Service, error) {
 	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid network config: %w", err)
+		return nil, sharedErrors.NewSystemError(sharedErrors.ErrCodeConfiguration, "invalid network configuration", false, err)
 	}
 
 	return &service{
@@ -51,31 +53,33 @@ func NewService(repo Repository, config *NetworkConfig, logger *slog.Logger) (Se
 // AllocateNodeSubnet allocates a subnet for a node and returns *net.IPNet
 func (s *service) AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.IPNet, error) {
 	if err := ValidateNodeID(nodeID); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
 
 	// Check if node already has a subnet
 	existing, err := s.repository.GetSubnet(ctx, nodeID)
 	if err == nil {
-		s.logger.Debug("node already has subnet",
-			slog.String("node_id", nodeID),
-			slog.String("subnet", existing.CIDR))
+		s.logger.DebugContext(ctx, "node already has subnet",
+			"node_id", nodeID,
+			"subnet", existing.CIDR)
 		return existing.Network, nil
 	}
 
 	// Get all used subnet CIDRs
 	usedCIDRs, err := s.repository.GetUsedSubnetCIDRs(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get used subnets: %w", err)
+		dbErr := sharedErrors.NewDatabaseError(sharedErrors.ErrCodeDatabase, "failed to get used subnets", true, err)
+		s.logger.ErrorCtx(ctx, "database operation failed", dbErr)
+		return nil, dbErr
 	}
 
 	// Find next available subnet
 	subnet, err := s.subnetAllocator.FindNextAvailableSubnet(ctx, usedCIDRs)
 	if err != nil {
-		return nil, &SubnetAllocationError{
-			NodeID: nodeID,
-			Err:    err,
-		}
+		ipErr := sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "failed to find next available subnet", false, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "subnet allocation failed", ipErr)
+		return nil, ipErr
 	}
 
 	// Assign node ID
@@ -83,21 +87,22 @@ func (s *service) AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.I
 
 	// Validate allocation
 	if err := s.subnetAllocator.ValidateSubnetAllocation(subnet); err != nil {
-		return nil, &SubnetAllocationError{
-			NodeID: nodeID,
-			Err:    err,
-		}
+		ipErr := sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "invalid subnet allocation", false, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "subnet validation failed", ipErr)
+		return nil, ipErr
 	}
 
 	// Store subnet
 	if err := s.repository.CreateSubnet(ctx, subnet); err != nil {
-		return nil, fmt.Errorf("failed to store subnet: %w", err)
+		dbErr := sharedErrors.NewDatabaseError(sharedErrors.ErrCodeDatabase, "failed to store subnet", true, err).WithMetadata("node_id", nodeID).WithMetadata("subnet_cidr", subnet.CIDR)
+		s.logger.ErrorCtx(ctx, "database operation failed", dbErr)
+		return nil, dbErr
 	}
 
-	s.logger.Info("allocated subnet",
-		slog.String("node_id", nodeID),
-		slog.String("subnet", subnet.CIDR),
-		slog.String("gateway", subnet.Gateway.String()))
+	s.logger.DebugContext(ctx, "allocated subnet",
+		"node_id", nodeID,
+		"subnet", subnet.CIDR,
+		"gateway", subnet.Gateway.String())
 
 	return subnet.Network, nil
 }
@@ -105,39 +110,47 @@ func (s *service) AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.I
 // ReleaseNodeSubnet releases a node's subnet allocation
 func (s *service) ReleaseNodeSubnet(ctx context.Context, nodeID string) error {
 	if err := ValidateNodeID(nodeID); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return err
 	}
 
 	// Check if subnet exists
 	exists, err := s.repository.SubnetExists(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("failed to check subnet existence: %w", err)
+		dbErr := sharedErrors.NewDatabaseError(sharedErrors.ErrCodeDatabase, "failed to check subnet existence", true, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "database operation failed", dbErr)
+		return dbErr
 	}
 
 	if !exists {
-		s.logger.Debug("subnet does not exist, nothing to release",
-			slog.String("node_id", nodeID))
+		s.logger.DebugContext(ctx, "subnet does not exist, nothing to release",
+			"node_id", nodeID)
 		return nil
 	}
 
 	// Delete subnet
 	if err := s.repository.DeleteSubnet(ctx, nodeID); err != nil {
-		return fmt.Errorf("failed to delete subnet: %w", err)
+		dbErr := sharedErrors.NewDatabaseError(sharedErrors.ErrCodeDatabase, "failed to delete subnet", true, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "database operation failed", dbErr)
+		return dbErr
 	}
 
-	s.logger.Info("released subnet", slog.String("node_id", nodeID))
+	s.logger.DebugContext(ctx, "released subnet", "node_id", nodeID)
 	return nil
 }
 
 // GetNodeSubnet retrieves a subnet for a node
 func (s *service) GetNodeSubnet(ctx context.Context, nodeID string) (*Subnet, error) {
 	if err := ValidateNodeID(nodeID); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
 
 	subnet, err := s.repository.GetSubnet(ctx, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get subnet for node %s: %w", nodeID, err)
+		ipErr := sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, fmt.Sprintf("failed to get subnet for node %s", nodeID), false, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "subnet lookup failed", ipErr)
+		return nil, ipErr
 	}
 
 	return subnet, nil
@@ -146,36 +159,37 @@ func (s *service) GetNodeSubnet(ctx context.Context, nodeID string) (*Subnet, er
 // AllocateClientIP allocates an IP address within a node's subnet and returns net.IP
 func (s *service) AllocateClientIP(ctx context.Context, nodeID string) (net.IP, error) {
 	if err := ValidateNodeID(nodeID); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
 
 	// Get subnet
 	subnet, err := s.repository.GetSubnet(ctx, nodeID)
 	if err != nil {
-		return nil, &IPAllocationError{
-			NodeID: nodeID,
-			Err:    fmt.Errorf("node has no allocated subnet: %w", err),
-		}
+		ipErr := sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "node has no allocated subnet", false, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "subnet lookup failed", ipErr)
+		return nil, ipErr
 	}
 
 	// Get allocated IPs
 	allocatedIPs, err := s.repository.GetAllocatedIPs(ctx, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get allocated IPs: %w", err)
+		dbErr := sharedErrors.NewDatabaseError(sharedErrors.ErrCodeDatabase, "failed to get allocated IPs", true, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "database operation failed", dbErr)
+		return nil, dbErr
 	}
 
 	// Find next available IP
 	nextIP, err := s.ipAllocator.FindNextAvailableIP(subnet, allocatedIPs)
 	if err != nil {
-		return nil, &IPAllocationError{
-			NodeID: nodeID,
-			Err:    err,
-		}
+		ipErr := sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "failed to find next available IP", false, err).WithMetadata("node_id", nodeID).WithMetadata("subnet_cidr", subnet.CIDR)
+		s.logger.ErrorCtx(ctx, "IP allocation failed", ipErr)
+		return nil, ipErr
 	}
 
-	s.logger.Debug("allocated IP",
-		slog.String("node_id", nodeID),
-		slog.String("ip", nextIP.String()))
+	s.logger.DebugContext(ctx, "allocated IP",
+		"node_id", nodeID,
+		"ip", nextIP.String())
 
 	return nextIP.IP, nil
 }
@@ -183,12 +197,13 @@ func (s *service) AllocateClientIP(ctx context.Context, nodeID string) (net.IP, 
 // ReleaseClientIP releases an IP address allocation
 func (s *service) ReleaseClientIP(ctx context.Context, nodeID string, ip net.IP) error {
 	if err := ValidateNodeID(nodeID); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return err
 	}
 
-	s.logger.Debug("IP released",
-		slog.String("node_id", nodeID),
-		slog.String("ip", ip.String()))
+	s.logger.DebugContext(ctx, "IP released",
+		"node_id", nodeID,
+		"ip", ip.String())
 
 	return nil
 }
@@ -196,12 +211,15 @@ func (s *service) ReleaseClientIP(ctx context.Context, nodeID string, ip net.IP)
 // GetAllocatedIPs returns all allocated IPs for a node as []net.IP
 func (s *service) GetAllocatedIPs(ctx context.Context, nodeID string) ([]net.IP, error) {
 	if err := ValidateNodeID(nodeID); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
 
 	ips, err := s.repository.GetAllocatedIPs(ctx, nodeID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get allocated IPs for node %s: %w", nodeID, err)
+		dbErr := sharedErrors.NewDatabaseError(sharedErrors.ErrCodeDatabase, fmt.Sprintf("failed to get allocated IPs for node %s", nodeID), true, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "database operation failed", dbErr)
+		return nil, dbErr
 	}
 
 	// Convert to []net.IP
@@ -216,19 +234,24 @@ func (s *service) GetAllocatedIPs(ctx context.Context, nodeID string) ([]net.IP,
 // GetAvailableIPCount returns the number of available IPs for a node
 func (s *service) GetAvailableIPCount(ctx context.Context, nodeID string) (int, error) {
 	if err := ValidateNodeID(nodeID); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return 0, err
 	}
 
 	// Get subnet
 	subnet, err := s.repository.GetSubnet(ctx, nodeID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get subnet: %w", err)
+		ipErr := sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "failed to get subnet", false, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "subnet lookup failed", ipErr)
+		return 0, ipErr
 	}
 
 	// Get allocated count
 	count, err := s.repository.CountAllocatedIPs(ctx, nodeID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to count allocated IPs: %w", err)
+		dbErr := sharedErrors.NewDatabaseError(sharedErrors.ErrCodeDatabase, "failed to count allocated IPs", true, err).WithMetadata("node_id", nodeID)
+		s.logger.ErrorCtx(ctx, "database operation failed", dbErr)
+		return 0, dbErr
 	}
 
 	// Calculate capacity
@@ -239,6 +262,7 @@ func (s *service) GetAvailableIPCount(ctx context.Context, nodeID string) (int, 
 // CheckIPConflict checks if an IP is already allocated
 func (s *service) CheckIPConflict(ctx context.Context, ip string) (bool, error) {
 	if err := ValidateIPv4Address(ip); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for IP address", err)
 		return false, err
 	}
 
@@ -248,6 +272,7 @@ func (s *service) CheckIPConflict(ctx context.Context, ip string) (bool, error) 
 // CheckPublicKeyConflict checks if a public key is already in use
 func (s *service) CheckPublicKeyConflict(ctx context.Context, publicKey string) (bool, error) {
 	if err := ValidateWireGuardPublicKey(publicKey); err != nil {
+		s.logger.ErrorCtx(ctx, "validation failed for public key", err)
 		return false, err
 	}
 

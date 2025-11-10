@@ -1,8 +1,11 @@
 package peer
 
 import (
+	"fmt"
 	"sync"
 	"time"
+
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 )
 
 // Pool for reusing Peer objects to reduce GC pressure
@@ -57,11 +60,13 @@ func NewPeer(nodeID, publicKey, allocatedIP string, presharedKey *string) (*Peer
 // UpdateStatus changes the peer status with validation
 func (p *Peer) UpdateStatus(newStatus Status) error {
 	if !newStatus.IsValid() {
-		return ErrInvalidStatus
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "invalid status", false, nil).
+			WithMetadata("status", newStatus)
 	}
 
 	if !p.Status.CanTransitionTo(newStatus) {
-		return ErrInvalidStatusTransition
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation,
+			fmt.Sprintf("invalid status transition from %s to %s", p.Status, newStatus), false, nil)
 	}
 
 	p.Status = newStatus
@@ -76,11 +81,11 @@ func (p *Peer) IsActive() bool {
 
 // Migrate updates the peer's node and IP address
 func (p *Peer) Migrate(newNodeID, newIP string) error {
-	if newNodeID == "" {
-		return NewValidationError("node_id", "cannot be empty", newNodeID)
+	if err := ValidateNodeID(newNodeID); err != nil {
+		return err
 	}
-	if newIP == "" {
-		return NewValidationError("allocated_ip", "cannot be empty", newIP)
+	if err := ValidateIPAddress(newIP); err != nil {
+		return err
 	}
 
 	p.NodeID = newNodeID
@@ -103,18 +108,9 @@ type CreateRequest struct {
 	PresharedKey *string
 }
 
-// Validate validates the create request
+// Validate validates the create request by delegating to the validation function
 func (r *CreateRequest) Validate() error {
-	if r.NodeID == "" {
-		return NewValidationError("node_id", "cannot be empty", r.NodeID)
-	}
-	if r.PublicKey == "" {
-		return NewValidationError("public_key", "cannot be empty", r.PublicKey)
-	}
-	if r.AllocatedIP == "" {
-		return NewValidationError("allocated_ip", "cannot be empty", r.AllocatedIP)
-	}
-	return nil
+	return ValidateCreateRequest(r)
 }
 
 // Filters represents filters for listing peers

@@ -9,32 +9,20 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // ProvisioningOrchestrator is the single unified orchestrator for all node provisioning
-// It handles both synchronous and asynchronous provisioning with event-driven progress tracking
-//
-// Responsibilities:
-//   - Coordinates provisioning workflows (sync and async)
-//   - Translates domain progress reports into events
-//   - Prevents duplicate provisioning attempts
-//   - Orchestrates the provisioning process
-//
-// Architecture:
-//   - Wraps domain layer node.ProvisioningService (does actual work)
-//   - Consumes events.ProgressReporter interface
-//   - Publishes events to ProvisioningEventBus (application layer consumes)
-//   - Uses NodeStateTracker for all state queries (no internal state)
 type ProvisioningOrchestrator struct {
 	domainService  *node.ProvisioningService
 	nodeService    node.NodeService
 	eventPublisher *events.ProvisioningEventPublisher
 	stateTracker   *events.NodeStateTracker
-	logger         *slog.Logger
+	logger         *applogger.Logger
 	config         OrchestratorConfig
 
-	// Historical data for ETA calculations
 	mu                  sync.RWMutex
 	historicalDurations map[string]time.Duration
 	unsubscribeFunc     *sharedevents.UnsubscribeFunc
@@ -54,153 +42,130 @@ func NewProvisioningOrchestratorWithConfig(
 	nodeService node.NodeService,
 	eventPublisher *events.ProvisioningEventPublisher,
 	config OrchestratorConfig,
-	logger *slog.Logger,
+	logger *applogger.Logger,
 ) *ProvisioningOrchestrator {
-	statueTracker := events.NewNodeStateTracker(eventPublisher)
+	statueTracker := events.NewNodeStateTracker(eventPublisher, logger)
 	return &ProvisioningOrchestrator{
 		domainService:       domainService,
 		nodeService:         nodeService,
 		eventPublisher:      eventPublisher,
 		stateTracker:        statueTracker,
-		logger:              logger,
+		logger:              logger.WithComponent("provisioning.orchestrator"),
 		config:              config,
 		historicalDurations: getDefaultPhaseDurations(),
 	}
 }
 
 // ProvisionNodeSync provisions a node synchronously (blocking call)
-// This is used when immediate provisioning is required (e.g., during rotation)
 func (o *ProvisioningOrchestrator) ProvisionNodeSync(ctx context.Context) (*node.Node, error) {
-	o.logger.Info("starting synchronous node provisioning")
+	op := o.logger.StartOp(ctx, "ProvisionNodeSync")
 
-	// Check if already provisioning
 	if o.IsProvisioning() {
-		return nil, fmt.Errorf("provisioning already in progress")
-	}
-
-	// Provision via domain service (it will call back to us via ProgressReporter interface)
-	// The state tracking is handled by events published through the ProgressReporter
-	startTime := time.Now()
-	provisionedNode, err := o.domainService.ProvisionNode(ctx)
-	if err != nil {
+		err := apperrors.NewSystemError(apperrors.ErrCodeProvisionInProgress, "provisioning already in progress", false, nil)
+		op.Fail(err, "provisioning already in progress")
 		return nil, err
 	}
 
-	// Update historical data
-	duration := time.Since(startTime)
-	o.updateHistoricalDuration("total", duration)
+	provisionedNode, err := o.domainService.ProvisionNode(ctx)
+	if err != nil {
+		op.Fail(err, "synchronous provisioning failed")
+		return nil, err
+	}
 
-	o.logger.Info("synchronous provisioning completed",
-		slog.String("node_id", provisionedNode.ID),
-		slog.Duration("duration", duration))
-
+	o.updateHistoricalDuration("total", time.Since(op.StartTime))
+	op.Complete("synchronous provisioning successful", slog.String("node_id", provisionedNode.ID))
 	return provisionedNode, nil
 }
 
 // ProvisionNodeAsync triggers asynchronous provisioning via event
-// Returns immediately, provisioning happens in background worker
 func (o *ProvisioningOrchestrator) ProvisionNodeAsync(ctx context.Context) error {
-	o.logger.Info("triggering asynchronous node provisioning")
+	op := o.logger.StartOp(ctx, "ProvisionNodeAsync")
 
-	// Check if already provisioning
 	if o.IsProvisioning() {
-		return fmt.Errorf("provisioning already in progress")
+		err := apperrors.NewSystemError(apperrors.ErrCodeProvisionInProgress, "provisioning already in progress", false, nil)
+		op.Fail(err, "provisioning already in progress")
+		return err
 	}
 
-	// Publish provision request event
 	requestID := fmt.Sprintf("provision-%d", time.Now().UnixNano())
 	if err := o.eventPublisher.PublishProvisionRequested(ctx, requestID, "rotator"); err != nil {
-		return fmt.Errorf("failed to publish provision request: %w", err)
+		err = apperrors.WrapWithDomain(err, apperrors.DomainEvent, "publish_failed", "failed to publish provision request", true)
+		op.Fail(err, "failed to publish provision request")
+		return err
 	}
 
-	o.logger.Info("async provisioning request published", slog.String("request_id", requestID))
+	op.Complete("async provisioning request published", slog.String("request_id", requestID))
 	return nil
 }
 
 // DestroyNode destroys a node with coordinated cleanup
 func (o *ProvisioningOrchestrator) DestroyNode(ctx context.Context, nodeID string) error {
-	o.logger.Info("destroying node", slog.String("node_id", nodeID))
-	return o.domainService.DestroyNode(ctx, nodeID)
+	op := o.logger.StartOp(ctx, "DestroyNode", slog.String("node_id", nodeID))
+	if err := o.domainService.DestroyNode(ctx, nodeID); err != nil {
+		op.Fail(err, "node destruction failed")
+		return err
+	}
+	op.Complete("node destroyed successfully")
+	return nil
 }
 
 // StartWorker starts the background worker that handles async provisioning requests
-// This should be called once during service initialization
 func (o *ProvisioningOrchestrator) StartWorker(ctx context.Context) {
-	o.logger.Info("starting provisioning orchestrator worker")
+	o.logger.InfoContext(ctx, "starting provisioning orchestrator worker")
 
-	// Subscribe to provision request events
 	unsubscribeFunc, err := o.eventPublisher.OnProvisionRequested(func(eventCtx context.Context, e sharedevents.Event) error {
 		return o.handleProvisionRequest(eventCtx, e)
 	})
 	if err != nil {
-		o.logger.Error("failed to subscribe to provision request events", slog.String("error", err.Error()))
+		o.logger.ErrorCtx(ctx, "failed to subscribe to provision request events", err)
 		return
 	}
 	o.unsubscribeFunc = &unsubscribeFunc
 
-	// Worker runs until context is cancelled
 	go func() {
 		<-ctx.Done()
 		o.logger.Info("stopping provisioning orchestrator worker due to context cancellation")
-
-		// Unsubscribe from events
 		if o.unsubscribeFunc != nil {
 			(*o.unsubscribeFunc)()
 			o.logger.Info("unsubscribed from provision request events")
 		}
 	}()
-	o.logger.Info("provisioning orchestrator worker started")
-
+	o.logger.InfoContext(ctx, "provisioning orchestrator worker started")
 }
 
 // handleProvisionRequest handles incoming async provision requests
 func (o *ProvisioningOrchestrator) handleProvisionRequest(ctx context.Context, e sharedevents.Event) error {
-	// Prevent duplicate provisioning by checking the state tracker
 	if o.IsProvisioning() {
-		o.logger.Info("provisioning already active, ignoring request")
+		o.logger.InfoContext(ctx, "provisioning already active, ignoring request", "event_type", e.Type())
 		return nil
 	}
-
-	// Run provisioning in background
+	o.logger.InfoContext(ctx, "received async provision request, starting worker", "event_data", e.Metadata())
 	go o.runProvisioningWithCleanup(ctx)
-
 	return nil
 }
 
 // runProvisioningWithCleanup executes provisioning and cleans up state afterwards
 func (o *ProvisioningOrchestrator) runProvisioningWithCleanup(ctx context.Context) {
-	startTime := time.Now()
-
-	// Provision via domain service (state is managed through events via ProgressReporter)
+	op := o.logger.StartOp(ctx, "run_async_provisioning")
 	provisionedNode, err := o.domainService.ProvisionNode(ctx)
-
 	if err != nil {
-		o.logger.Error("async provisioning failed", slog.String("error", err.Error()))
+		op.Fail(err, "async provisioning failed")
 		return
 	}
-
-	// Update historical data
-	duration := time.Since(startTime)
-	o.updateHistoricalDuration("total", duration)
-
-	o.logger.Info("async provisioning completed",
-		slog.String("node_id", provisionedNode.ID),
-		slog.Duration("duration", duration))
+	o.updateHistoricalDuration("total", time.Since(op.StartTime))
+	op.Complete("async provisioning successful", slog.String("node_id", provisionedNode.ID))
 }
 
 // Status Query Methods (delegated to NodeStateTracker)
 
-// IsProvisioning returns true if provisioning is currently active
 func (o *ProvisioningOrchestrator) IsProvisioning() bool {
 	return o.stateTracker.IsProvisioning()
 }
 
-// GetCurrentStatus returns the current provisioning status
 func (o *ProvisioningOrchestrator) GetCurrentStatus() *events.ProvisioningNodeState {
 	return o.stateTracker.GetActiveNode()
 }
 
-// GetEstimatedWaitTime returns estimated time remaining for current provisioning
 func (o *ProvisioningOrchestrator) GetEstimatedWaitTime() time.Duration {
 	waitTime := o.stateTracker.GetEstimatedWaitTime()
 	if waitTime > 0 {
@@ -209,20 +174,17 @@ func (o *ProvisioningOrchestrator) GetEstimatedWaitTime() time.Duration {
 	return o.config.DefaultProvisioningETA
 }
 
-// GetProgress returns current progress (0.0 to 1.0)
 func (o *ProvisioningOrchestrator) GetProgress() float64 {
 	return o.stateTracker.GetProgress()
 }
 
 // Helper Methods
 
-// updateHistoricalDuration updates historical duration data (thread-safe)
 func (o *ProvisioningOrchestrator) updateHistoricalDuration(phase string, duration time.Duration) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
 	if existing, exists := o.historicalDurations[phase]; exists {
-		// Exponential moving average
 		weight := float64(o.config.ETAHistoryRetention) / (float64(o.config.ETAHistoryRetention) + 1.0)
 		newDuration := time.Duration(weight*float64(existing) + (1.0-weight)*float64(duration))
 		o.historicalDurations[phase] = newDuration

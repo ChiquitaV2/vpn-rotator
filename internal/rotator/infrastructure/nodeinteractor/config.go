@@ -1,6 +1,11 @@
 package nodeinteractor
 
-import "time"
+import (
+	"fmt"
+	"time"
+
+	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+)
 
 // DefaultConfig returns a NodeInteractorConfig with sensible defaults
 func DefaultConfig() NodeInteractorConfig {
@@ -67,53 +72,53 @@ func DefaultConfig() NodeInteractorConfig {
 // ValidateConfig validates the NodeInteractorConfig
 func ValidateConfig(config NodeInteractorConfig) error {
 	if config.SSHTimeout <= 0 {
-		return NewValidationError("ssh_timeout", config.SSHTimeout, "positive", "must be greater than 0")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "ssh_timeout must be greater than 0", false, nil)
 	}
 
 	if config.CommandTimeout <= 0 {
-		return NewValidationError("command_timeout", config.CommandTimeout, "positive", "must be greater than 0")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "command_timeout must be greater than 0", false, nil)
 	}
 
 	if config.WireGuardInterface == "" {
-		return NewValidationError("wireguard_interface", config.WireGuardInterface, "non-empty", "cannot be empty")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "wireguard_interface cannot be empty", false, nil)
 	}
 
 	if config.WireGuardConfigPath == "" {
-		return NewValidationError("wireguard_config_path", config.WireGuardConfigPath, "non-empty", "cannot be empty")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "wireguard_config_path cannot be empty", false, nil)
 	}
 
 	if config.RetryAttempts < 1 {
-		return NewValidationError("retry_attempts", config.RetryAttempts, "minimum", "must be at least 1")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "retry_attempts must be at least 1", false, nil)
 	}
 
 	if config.RetryBackoff <= 0 {
-		return NewValidationError("retry_backoff", config.RetryBackoff, "positive", "must be greater than 0")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "retry_backoff must be greater than 0", false, nil)
 	}
 
 	// Validate health check commands
 	for i, cmd := range config.HealthCheckCommands {
 		if cmd.Name == "" {
-			return NewValidationError("health_check_commands["+string(rune(i))+"].name", cmd.Name, "non-empty", "cannot be empty")
+			return errors.NewInfrastructureError(errors.ErrCodeConfiguration, fmt.Sprintf("health_check_commands[%d].name cannot be empty", i), false, nil)
 		}
 		if cmd.Command == "" {
-			return NewValidationError("health_check_commands["+string(rune(i))+"].command", cmd.Command, "non-empty", "cannot be empty")
+			return errors.NewInfrastructureError(errors.ErrCodeConfiguration, fmt.Sprintf("health_check_commands[%d].command cannot be empty", i), false, nil)
 		}
 		if cmd.Timeout <= 0 {
-			return NewValidationError("health_check_commands["+string(rune(i))+"].timeout", cmd.Timeout, "positive", "must be greater than 0")
+			return errors.NewInfrastructureError(errors.ErrCodeConfiguration, fmt.Sprintf("health_check_commands[%d].timeout must be greater than 0", i), false, nil)
 		}
 	}
 
 	// Validate circuit breaker config
 	if config.CircuitBreaker.FailureThreshold < 1 {
-		return NewValidationError("circuit_breaker.failure_threshold", config.CircuitBreaker.FailureThreshold, "minimum", "must be at least 1")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "circuit_breaker.failure_threshold must be at least 1", false, nil)
 	}
 
 	if config.CircuitBreaker.ResetTimeout <= 0 {
-		return NewValidationError("circuit_breaker.reset_timeout", config.CircuitBreaker.ResetTimeout, "positive", "must be greater than 0")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "circuit_breaker.reset_timeout must be greater than 0", false, nil)
 	}
 
 	if config.CircuitBreaker.MaxAttempts < 1 {
-		return NewValidationError("circuit_breaker.max_attempts", config.CircuitBreaker.MaxAttempts, "minimum", "must be at least 1")
+		return errors.NewInfrastructureError(errors.ErrCodeConfiguration, "circuit_breaker.max_attempts must be at least 1", false, nil)
 	}
 
 	return nil

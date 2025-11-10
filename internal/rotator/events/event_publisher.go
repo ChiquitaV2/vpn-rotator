@@ -5,9 +5,12 @@ package events
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
+	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/events"
+	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // =============================================================================
@@ -15,10 +18,9 @@ import (
 // =============================================================================
 
 // EventPublisher is the central hub for all domain-specific event publishing.
-// It provides access to specialized publishers for different domains like provisioning,
-// nodes, WireGuard, and system events.
 type EventPublisher struct {
 	bus          events.EventBus
+	logger       *applogger.Logger
 	Provisioning *ProvisioningEventPublisher
 	Node         *NodeEventPublisher
 	WireGuard    *WireGuardEventPublisher
@@ -27,12 +29,14 @@ type EventPublisher struct {
 }
 
 // NewEventPublisher creates a new unified event publisher.
-func NewEventPublisher(bus events.EventBus) *EventPublisher {
+func NewEventPublisher(bus events.EventBus, logger *applogger.Logger) *EventPublisher {
 	// The base publisher provides the core Publish/Subscribe functionality.
-	basePublisher := NewDomainEventPublisher(bus)
+	basePublisher := NewDomainEventPublisher(bus, logger)
+	scopedLogger := logger.WithComponent("event.publisher")
 
 	return &EventPublisher{
 		bus:          bus,
+		logger:       scopedLogger,
 		Provisioning: &ProvisioningEventPublisher{basePublisher},
 		Node:         &NodeEventPublisher{basePublisher},
 		WireGuard:    &WireGuardEventPublisher{basePublisher},
@@ -43,6 +47,7 @@ func NewEventPublisher(bus events.EventBus) *EventPublisher {
 
 // Close closes the underlying event bus.
 func (p *EventPublisher) Close() error {
+	p.logger.DebugContext(context.Background(), "closing event bus")
 	return p.bus.Close()
 }
 
@@ -62,21 +67,32 @@ func (p *EventPublisher) Bus() events.EventBus {
 
 // DomainEventPublisher provides a generic, reusable event publishing interface for any domain.
 type DomainEventPublisher struct {
-	bus   events.EventBus
-	utils *events.EventUtils
+	bus    events.EventBus
+	utils  *events.EventUtils
+	logger *applogger.Logger
 }
 
 // NewDomainEventPublisher creates a new domain event publisher.
-func NewDomainEventPublisher(bus events.EventBus) *DomainEventPublisher {
+func NewDomainEventPublisher(bus events.EventBus, logger *applogger.Logger) *DomainEventPublisher {
 	return &DomainEventPublisher{
-		bus:   bus,
-		utils: events.NewEventUtils(),
+		bus:    bus,
+		utils:  events.NewEventUtils(),
+		logger: logger,
 	}
 }
 
 // Publish publishes any event to the bus.
 func (p *DomainEventPublisher) Publish(ctx context.Context, event events.Event) error {
-	return p.bus.Publish(ctx, event)
+	op := p.logger.StartOp(ctx, "publish_event", slog.String("event_type", event.Type()))
+
+	err := p.bus.Publish(ctx, event)
+	if err != nil {
+		p.logger.ErrorCtx(ctx, "failed to publish event", err)
+		op.Fail(err, "failed to publish event")
+		return err
+	}
+	// Note: We don't log "completed" to avoid excessive log spam.
+	return nil
 }
 
 // PublishWithRetry publishes an event with retry logic for transient failures.
@@ -87,7 +103,7 @@ func (p *DomainEventPublisher) PublishWithRetry(ctx context.Context, event event
 // PublishSimple publishes a simple event with just type and metadata.
 func (p *DomainEventPublisher) PublishSimple(ctx context.Context, eventType string, metadata map[string]interface{}) error {
 	event := events.NewBaseEvent(eventType, metadata)
-	return p.bus.Publish(ctx, event)
+	return p.Publish(ctx, event)
 }
 
 // PublishSimpleWithRetry publishes a simple event with retry logic.
@@ -148,13 +164,21 @@ func (p *ProvisioningEventPublisher) PublishProvisionCompleted(ctx context.Conte
 }
 
 // PublishProvisionFailed publishes a provisioning failed event.
-func (p *ProvisioningEventPublisher) PublishProvisionFailed(ctx context.Context, nodeID, phase, errorMsg string, retryable bool) error {
-	return p.PublishSimple(ctx, EventProvisionFailed, map[string]interface{}{
-		"node_id":   nodeID,
-		"phase":     phase,
-		"error":     errorMsg,
-		"retryable": retryable,
-	})
+func (p *ProvisioningEventPublisher) PublishProvisionFailed(ctx context.Context, nodeID, phase string, err error) error {
+	// Unpack the domain error
+	_, code, errorMsg, retryable, meta, _, _ := apperrors.UnpackError(err)
+
+	payload := map[string]interface{}{
+		"node_id":    nodeID,
+		"phase":      phase,
+		"error":      errorMsg,
+		"retryable":  retryable,
+		"error_code": code,
+		"error_meta": meta,
+	}
+
+	p.logger.ErrorCtx(ctx, "publishing provision failed event", err, slog.String("node_id", nodeID), slog.String("phase", phase))
+	return p.PublishSimple(ctx, EventProvisionFailed, payload)
 }
 
 // OnProvisionRequested subscribes to provision request events.
@@ -266,7 +290,6 @@ func (p *WireGuardEventPublisher) PublishWireGuardConfigSaved(ctx context.Contex
 // OnWireGuardEvent subscribes to any WireGuard-related event.
 func (p *WireGuardEventPublisher) OnWireGuardEvent(handler events.EventHandler) (events.UnsubscribeFunc, error) {
 	// This is a helper to subscribe to multiple events.
-	// You can expand this pattern for other event groups.
 	return p.Subscribe(EventWireGuardPeerAdded, handler) // Example, should subscribe to all relevant events
 }
 
@@ -293,15 +316,21 @@ func (p *SystemEventPublisher) PublishHealthCheck(ctx context.Context, component
 }
 
 // PublishError publishes a generic error event.
-func (p *SystemEventPublisher) PublishError(ctx context.Context, component, operation, errorMsg string, retryable bool, metadata map[string]interface{}) error {
-	if metadata == nil {
-		metadata = make(map[string]interface{})
+func (p *SystemEventPublisher) PublishError(ctx context.Context, component, operation string, err error) error {
+	// Unpack the domain error
+	_, code, errorMsg, retryable, meta, _, _ := apperrors.UnpackError(err)
+
+	if meta == nil {
+		meta = make(map[string]interface{})
 	}
-	metadata["component"] = component
-	metadata["operation"] = operation
-	metadata["error"] = errorMsg
-	metadata["retryable"] = retryable
-	return p.PublishSimple(ctx, EventError, metadata)
+	meta["component"] = component
+	meta["operation"] = operation
+	meta["error"] = errorMsg
+	meta["retryable"] = retryable
+	meta["error_code"] = code
+
+	p.logger.ErrorCtx(ctx, "publishing system error event", err, slog.String("component", component), slog.String("operation", operation))
+	return p.PublishSimple(ctx, EventError, meta)
 }
 
 // OnError subscribes to error events.

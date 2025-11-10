@@ -36,7 +36,7 @@ type Connector struct {
 // NewConnector creates a new simplified connector
 func NewConnector(cfg *config.Config, log *logger.Logger) *Connector {
 	if log == nil {
-		log = logger.New("info", "text")
+		log = logger.NewDevelopment("connector")
 	}
 
 	if cfg.KeyPath == "" {

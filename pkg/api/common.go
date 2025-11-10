@@ -9,7 +9,8 @@ type Response[T any] struct {
 
 // ErrorInfo contains detailed error information
 type ErrorInfo struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id,omitempty"`
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	RequestID string         `json:"request_id,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
