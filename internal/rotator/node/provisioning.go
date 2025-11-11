@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
@@ -18,7 +18,7 @@ type ProvisioningService struct {
 	nodeService      NodeService
 	repository       NodeRepository
 	cloudProvisioner CloudProvisioner
-	nodeInteractor   nodeinteractor.HealthChecker
+	nodeInteractor   remote.HealthChecker
 	ipService        ip.Service
 	progressReporter ProgressReporter
 	logger           *applogger.Logger // <-- Changed
@@ -56,7 +56,7 @@ func NewProvisioningService(
 	nodeService NodeService,
 	repository NodeRepository,
 	cloudProvisioner CloudProvisioner,
-	nodeInteractor nodeinteractor.HealthChecker,
+	nodeInteractor remote.HealthChecker,
 	ipService ip.Service,
 	logger *applogger.Logger, // <-- Changed
 	config ProvisioningServiceConfig,

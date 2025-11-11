@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
@@ -16,7 +16,7 @@ import (
 type HealthService struct {
 	nodeService    NodeService
 	repository     NodeRepository
-	nodeInteractor nodeinteractor.HealthChecker
+	nodeInteractor remote.HealthChecker
 	logger         *applogger.Logger
 	config         HealthConfig
 
@@ -61,7 +61,7 @@ type HealthAlert struct {
 func NewHealthService(
 	nodeService NodeService,
 	repository NodeRepository,
-	nodeInteractor nodeinteractor.HealthChecker,
+	nodeInteractor remote.HealthChecker,
 	logger *applogger.Logger, // <-- Changed
 	config HealthConfig,
 ) *HealthService {

@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -21,7 +21,7 @@ type NodeRotationService struct {
 	nodeService              node.NodeService
 	peerService              peer.Service
 	ipService                ip.Service
-	wireguardManager         nodeinteractor.WireGuardManager
+	wireguardManager         remote.WireGuardManager
 	provisioningOrchestrator *ProvisioningOrchestrator
 	logger                   *applogger.Logger
 }
@@ -31,7 +31,7 @@ func NewNodeRotationService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	wireguardManager nodeinteractor.WireGuardManager,
+	wireguardManager remote.WireGuardManager,
 	provisioningOrchestrator *ProvisioningOrchestrator,
 	logger *applogger.Logger,
 ) *NodeRotationService {
@@ -173,7 +173,7 @@ func (s *NodeRotationService) migrateSinglePeer(ctx context.Context, sourcePeer 
 		return apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeNodeNotFound, "failed to get target node", false)
 	}
 
-	wgConfig := nodeinteractor.PeerWireGuardConfig{
+	wgConfig := remote.PeerWireGuardConfig{
 		PublicKey:    sourcePeer.PublicKey,
 		PresharedKey: sourcePeer.PresharedKey,
 		AllowedIPs:   []string{newIP.String() + "/32"},

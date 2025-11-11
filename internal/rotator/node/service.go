@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
@@ -14,8 +14,8 @@ import (
 type Service struct {
 	repository       NodeRepository
 	cloudProvisioner CloudProvisioner
-	healthChecker    nodeinteractor.HealthChecker
-	wireguardManager nodeinteractor.WireGuardManager
+	healthChecker    remote.HealthChecker
+	wireguardManager remote.WireGuardManager
 	logger           *applogger.Logger // <-- Changed
 	config           ServiceConfig
 }
@@ -34,8 +34,8 @@ type ServiceConfig struct {
 func NewService(
 	repository NodeRepository,
 	cloudProvisioner CloudProvisioner,
-	healthChecker nodeinteractor.HealthChecker,
-	wireguardManager nodeinteractor.WireGuardManager,
+	healthChecker remote.HealthChecker,
+	wireguardManager remote.WireGuardManager,
 	logger *applogger.Logger, // <-- Changed
 	config ServiceConfig,
 ) *Service {

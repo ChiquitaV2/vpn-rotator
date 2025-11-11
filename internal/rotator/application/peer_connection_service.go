@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -20,7 +20,7 @@ type PeerConnectionService struct {
 	nodeService      node.NodeService
 	peerService      peer.Service
 	ipService        ip.Service
-	wireguardManager nodeinteractor.WireGuardManager
+	wireguardManager remote.WireGuardManager
 	logger           *applogger.Logger
 }
 
@@ -29,7 +29,7 @@ func NewPeerConnectionService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	wireguardManager nodeinteractor.WireGuardManager,
+	wireguardManager remote.WireGuardManager,
 	logger *applogger.Logger,
 ) *PeerConnectionService {
 	return &PeerConnectionService{
@@ -101,7 +101,7 @@ func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.Connect
 	}
 	op.With(slog.String("peer_id", createdPeer.ID))
 
-	wgConfig := nodeinteractor.PeerWireGuardConfig{
+	wgConfig := remote.PeerWireGuardConfig{
 		PublicKey:  createdPeer.PublicKey,
 		AllowedIPs: []string{createdPeer.AllocatedIP + "/32"},
 	}

@@ -1,4 +1,4 @@
-package nodeinteractor
+package remote
 
 import (
 	"time"

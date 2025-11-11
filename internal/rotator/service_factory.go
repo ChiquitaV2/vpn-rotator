@@ -9,8 +9,8 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/provisioner"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
@@ -42,7 +42,7 @@ type ServiceComponents struct {
 	// Infrastructure layer
 	Store            db.Store
 	CloudProvisioner provisioner.CloudProvisioner
-	NodeInteractor   nodeinteractor.NodeInteractor
+	NodeInteractor   remote.NodeInteractor
 
 	// Event system
 	EventBus         sharedevents.EventBus
@@ -235,7 +235,7 @@ func (f *ServiceFactory) createNodeInteractor(c *ServiceComponents) error {
 	}
 
 	interactorConfig := f.createNodeInteractorConfig()
-	interactor, err := nodeinteractor.NewSSHNodeInteractor(string(privateKey), interactorConfig, f.logger)
+	interactor, err := remote.NewSSHNodeInteractor(string(privateKey), interactorConfig, f.logger)
 	if err != nil {
 		interactorErr := errors.WrapWithDomain(err, errors.DomainSystem, errors.ErrCodeInternal,
 			"failed to create SSH node interactor", false)
@@ -392,20 +392,20 @@ func (f *ServiceFactory) createNodeServiceConfig() node.ServiceConfig {
 	}
 }
 
-func (f *ServiceFactory) createNodeInteractorConfig() nodeinteractor.NodeInteractorConfig {
+func (f *ServiceFactory) createNodeInteractorConfig() remote.NodeInteractorConfig {
 	// Use internal defaults for node interactor configuration
 	nodeDefaults := f.internalDefaults.NodeInteractorDefaults()
 	breakerDefaults := f.internalDefaults.CircuitBreakerDefaults()
 
-	return nodeinteractor.NodeInteractorConfig{
+	return remote.NodeInteractorConfig{
 		SSHTimeout:          nodeDefaults.SSHTimeout,
 		CommandTimeout:      nodeDefaults.CommandTimeout,
 		WireGuardConfigPath: nodeDefaults.WireGuardConfigPath,
 		WireGuardInterface:  nodeDefaults.WireGuardInterface,
 		RetryAttempts:       nodeDefaults.RetryAttempts,
 		RetryBackoff:        nodeDefaults.RetryBackoff,
-		HealthCheckCommands: nodeinteractor.DefaultConfig().HealthCheckCommands,
-		CircuitBreaker: nodeinteractor.CircuitBreakerConfig{
+		HealthCheckCommands: remote.DefaultConfig().HealthCheckCommands,
+		CircuitBreaker: remote.CircuitBreakerConfig{
 			FailureThreshold: breakerDefaults.FailureThreshold,
 			ResetTimeout:     breakerDefaults.ResetTimeout,
 			MaxAttempts:      breakerDefaults.MaxAttempts,
@@ -466,6 +466,3 @@ func (f *ServiceFactory) getDefaultLocation() string {
 	}
 	return "nbg1" // Default fallback
 }
-
-// Health check commands are now handled by internal defaults in nodeinteractor.DefaultConfig()
-// This function is no longer needed as health checks are not user-configurable

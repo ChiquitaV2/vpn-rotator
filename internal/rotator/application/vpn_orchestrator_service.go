@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/nodeinteractor"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -29,7 +29,7 @@ func NewVPNOrchestratorService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	nodeInteractor nodeinteractor.NodeInteractor,
+	nodeInteractor remote.NodeInteractor,
 	provisioningOrchestrator *ProvisioningOrchestrator,
 	logger *applogger.Logger,
 ) VPNService {
