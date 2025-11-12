@@ -122,19 +122,17 @@ func (s *Service) initializeScheduler() error {
 
 // initializeAPIServer creates the API server using application services
 func (s *Service) initializeAPIServer() error {
-	s.logger.Debug("initializing API server with application services")
+	s.logger.Debug("initializing API server with orchestrator service")
 
-	// Create API server that uses application services
-	apiServer := api.NewServerWithAsyncProvisioning(
+	// Create API server that uses orchestrator service
+	apiServer := api.NewServer(
 		api.ServerConfig{
 			Address:     s.config.API.ListenAddr,
 			CORSOrigins: []string{"*"}, // TODO: Make configurable
 		},
 		s.components.VPNOrchestrator,
-		s.components.PeerConnectionSvr,
-		s.components.AdminService,
+		s.components.AdminOrchestrator,
 		s.components.HealthService,
-		s.components.ProvisioningService,
 		s.logger,
 	)
 

@@ -30,13 +30,16 @@ func (s *Server) connectHandler() http.HandlerFunc {
 		}
 		op.Progress("request validated")
 
-		response, err := s.vpnService.ConnectPeer(ctx, req)
+		// Convert API -> service request and call orchestrator
+		svcReq := ConvertToServiceConnectRequest(req)
+		svcResp, err := s.vpnService.ConnectPeer(ctx, svcReq)
 		if err != nil {
 			op.Fail(err, "failed to connect peer")
 			WriteErrorResponse(w, r, err)
 			return
 		}
-
+		// Convert service -> API response
+		response := ConvertToAPIConnectResponse(svcResp)
 		if err := WriteSuccess(w, response); err != nil {
 			op.Fail(err, "failed to encode response")
 			return
@@ -66,7 +69,7 @@ func (s *Server) disconnectHandler() http.HandlerFunc {
 		}
 		op.With("peer_id", req.PeerID)
 
-		err := s.peerConnectionService.DisconnectPeer(ctx, req.PeerID)
+		err := s.vpnService.DisconnectPeer(ctx, req.PeerID)
 		if err != nil {
 			op.Fail(err, "failed to disconnect peer")
 			WriteErrorResponse(w, r, err)
@@ -100,13 +103,16 @@ func (s *Server) listPeersHandler() http.HandlerFunc {
 			return
 		}
 
-		peers, err := s.peerConnectionService.ListPeers(ctx, params)
+		// Convert API -> service params
+		svcParams := ConvertToServicePeerListParams(params)
+		svcPeers, err := s.vpnService.ListPeers(ctx, svcParams)
 		if err != nil {
 			op.Fail(err, "failed to list active peers")
 			WriteErrorResponse(w, r, err)
 			return
 		}
-
+		// Convert service -> API response
+		peers := ConvertToAPIPeersListResponse(svcPeers)
 		if err := WriteSuccess(w, peers); err != nil {
 			op.Fail(err, "failed to encode response")
 			return
@@ -130,13 +136,13 @@ func (s *Server) getPeerHandler() http.HandlerFunc {
 			return
 		}
 
-		peerStatus, err := s.peerConnectionService.GetPeerStatus(ctx, peerID)
+		svcStatus, err := s.vpnService.GetPeerStatus(ctx, peerID)
 		if err != nil {
 			op.Fail(err, "failed to get peer status")
 			WriteErrorResponse(w, r, err)
 			return
 		}
-
+		peerStatus := ConvertToAPIPeerStatus(svcStatus)
 		if err := WriteSuccess(w, peerStatus); err != nil {
 			op.Fail(err, "failed to encode response")
 			return

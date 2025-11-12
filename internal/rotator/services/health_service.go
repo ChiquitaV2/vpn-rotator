@@ -1,14 +1,12 @@
-package application
+package services
 
 import (
 	"context"
-
-	"github.com/chiquitav2/vpn-rotator/pkg/api"
 )
 
 // HealthService defines the application layer interface for health checks.
 type HealthService interface {
-	GetHealth(ctx context.Context) (*api.HealthResponse, error)
+	GetHealth(ctx context.Context) (*HealthResponse, error)
 }
 
 // healthService implements HealthService.
@@ -24,8 +22,8 @@ func NewHealthService(provisioningService *ProvisioningService) HealthService {
 }
 
 // GetHealth returns the service health status.
-func (s *healthService) GetHealth(ctx context.Context) (*api.HealthResponse, error) {
-	response := &api.HealthResponse{
+func (s *healthService) GetHealth(ctx context.Context) (*HealthResponse, error) {
+	response := &HealthResponse{
 		Status:  "healthy",
 		Version: "1.0.0",
 	}
@@ -33,7 +31,7 @@ func (s *healthService) GetHealth(ctx context.Context) (*api.HealthResponse, err
 	if s.provisioningService != nil {
 		provisioningStatus := s.provisioningService.GetCurrentStatus()
 		if provisioningStatus != nil {
-			response.Provisioning = &api.ProvisioningInfo{
+			response.Provisioning = &ProvisioningInfo{
 				IsActive:     provisioningStatus.IsActive,
 				Phase:        provisioningStatus.Phase,
 				Progress:     provisioningStatus.Progress,

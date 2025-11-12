@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/provisioner"
@@ -15,7 +14,9 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
@@ -41,7 +42,7 @@ func NewServiceFactory(cfg *config.Config, logger *logger.Logger) *ServiceFactor
 type ServiceComponents struct {
 	// Infrastructure layer
 	Store            db.Store
-	CloudProvisioner application.CloudProvisioner
+	CloudProvisioner services.CloudProvisioner
 	NodeInteractor   remote.NodeInteractor
 
 	// Event system
@@ -55,13 +56,13 @@ type ServiceComponents struct {
 	IPService   ip.Service
 
 	// Application services
-	PeerConnectionSvr      *application.PeerConnectionService
-	AdminService           application.AdminService
-	ProvisioningService    *application.ProvisioningService
-	NodeRotatorService     *application.NodeRotationService
-	ResourceCleanupService *application.ResourceCleanupService
-	VPNOrchestrator        application.VPNService
-	HealthService          application.HealthService
+	PeerConnectionSvr      *services.PeerConnectionService
+	AdminOrchestrator      orchestrator.AdminOrchestrator
+	ProvisioningService    *services.ProvisioningService
+	NodeRotatorService     *services.NodeRotationService
+	ResourceCleanupService *services.ResourceCleanupService
+	VPNOrchestrator        orchestrator.VPNService
+	HealthService          services.HealthService
 
 	// Repositories
 	NodeRepository   node.NodeRepository
@@ -318,7 +319,7 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 	}
 
 	// Create peer connection service
-	c.PeerConnectionSvr = application.NewPeerConnectionService(
+	c.PeerConnectionSvr = services.NewPeerConnectionService(
 		c.NodeService,
 		c.PeerService,
 		c.IPService,
@@ -328,7 +329,7 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 	f.logger.DebugContext(ctx, "peer connection service created successfully")
 
 	// Create resource cleanup service
-	c.ResourceCleanupService = application.NewResourceCleanupService(
+	c.ResourceCleanupService = services.NewResourceCleanupService(
 		c.NodeService,
 		c.PeerService,
 		c.IPService,
@@ -337,7 +338,7 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 	f.logger.DebugContext(ctx, "resource cleanup service created successfully")
 
 	// Create node rotation service
-	c.NodeRotatorService = application.NewNodeRotationService(
+	c.NodeRotatorService = services.NewNodeRotationService(
 		c.NodeService,
 		c.PeerService,
 		c.IPService,
@@ -348,8 +349,24 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 	)
 	f.logger.DebugContext(ctx, "node rotation service created successfully")
 
-	// Create VPN orchestrator service
-	c.VPNOrchestrator = application.NewVPNOrchestratorService(
+	// Create admin orchestrator (replaces previous admin service usage)
+	c.AdminOrchestrator = orchestrator.NewAdminOrchestrator(
+		c.NodeService,
+		c.PeerService,
+		c.IPService,
+		c.ResourceCleanupService,
+		c.NodeRotatorService,
+		c.ProvisioningService,
+		f.logger,
+	)
+	f.logger.DebugContext(ctx, "admin orchestrator created successfully")
+
+	// Create health service
+	c.HealthService = services.NewHealthService(c.ProvisioningService)
+	f.logger.DebugContext(ctx, "health service created successfully")
+
+	// Create VPN orchestrator service (slimmed – admin & health handled separately)
+	c.VPNOrchestrator = orchestrator.NewVPNService(
 		c.PeerConnectionSvr,
 		c.NodeRotatorService,
 		c.ResourceCleanupService,
@@ -358,23 +375,6 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		f.logger,
 	)
 	f.logger.DebugContext(ctx, "VPN orchestrator service created successfully")
-
-	// Create admin service
-	adminService := application.NewAdminService(
-		c.NodeService,
-		c.PeerService,
-		c.IPService,
-		c.VPNOrchestrator,
-		c.ProvisioningService,
-		f.logger,
-	)
-	c.AdminService = adminService
-	f.logger.DebugContext(ctx, "admin service created successfully")
-
-	// Create health service
-	healthService := application.NewHealthService(c.ProvisioningService)
-	c.HealthService = healthService
-	f.logger.DebugContext(ctx, "health service created successfully")
 
 	op.Complete("application services initialized successfully")
 	return nil
@@ -387,7 +387,7 @@ func (f *ServiceFactory) createProvisioningService(c *ServiceComponents) error {
 	f.logger.DebugContext(ctx, "initializing provisioning service")
 
 	provConfig := f.createProvisioningServiceConfig()
-	provService := application.NewProvisioningService(
+	provService := services.NewProvisioningService(
 		c.NodeService,
 		c.NodeRepository,
 		c.CloudProvisioner,
@@ -439,13 +439,13 @@ func (f *ServiceFactory) createNodeInteractorConfig() remote.NodeInteractorConfi
 	}
 }
 
-func (f *ServiceFactory) createProvisioningServiceConfig() application.ProvisioningServiceConfig {
+func (f *ServiceFactory) createProvisioningServiceConfig() services.ProvisioningServiceConfig {
 	// Use centralized internal defaults for provisioning configuration
 	eventDefaults := f.internalDefaults.EventSystemDefaults()
 	nodeDefaults := f.internalDefaults.NodeInteractorDefaults()
 	provDefaults := f.internalDefaults.ProvisioningDefaults()
 
-	return application.ProvisioningServiceConfig{
+	return services.ProvisioningServiceConfig{
 		ProvisioningTimeout:    eventDefaults.WorkerTimeout,
 		ReadinessTimeout:       provDefaults.ReadinessTimeout,
 		ReadinessCheckInterval: provDefaults.ReadinessCheckInterval,

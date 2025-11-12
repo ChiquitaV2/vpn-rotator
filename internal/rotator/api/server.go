@@ -6,20 +6,19 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/application"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // Server represents the HTTP API server with proper lifecycle management.
 type Server struct {
-	server                *http.Server
-	vpnService            application.VPNService
-	peerConnectionService *application.PeerConnectionService
-	adminService          application.AdminService
-	healthService         application.HealthService
-	provisioningService   *application.ProvisioningService
-	logger                *applogger.Logger // <-- Changed
-	corsOrigins           []string
+	server            *http.Server
+	vpnService        orchestrator.VPNService
+	adminOrchestrator orchestrator.AdminOrchestrator
+	healthService     services.HealthService
+	logger            *applogger.Logger
+	corsOrigins       []string
 }
 
 // ServerConfig contains configuration for the API server.
@@ -28,24 +27,20 @@ type ServerConfig struct {
 	CORSOrigins []string
 }
 
-// NewServerWithAsyncProvisioning creates a new API server instance with provisioning orchestrator support.
-func NewServerWithAsyncProvisioning(
+// NewServer creates a new API server instance.
+func NewServer(
 	config ServerConfig,
-	vpnService application.VPNService,
-	peerConnectionService *application.PeerConnectionService,
-	adminService application.AdminService,
-	healthService application.HealthService,
-	provisioningService *application.ProvisioningService,
-	logger *applogger.Logger, // <-- Changed
+	vpnService orchestrator.VPNService,
+	adminOrchestrator orchestrator.AdminOrchestrator,
+	healthService services.HealthService,
+	logger *applogger.Logger,
 ) *Server {
 	return &Server{
-		vpnService:            vpnService,
-		peerConnectionService: peerConnectionService,
-		adminService:          adminService,
-		healthService:         healthService,
-		provisioningService:   provisioningService,
-		logger:                logger.WithComponent("api.server"), // <-- Scoped logger
-		corsOrigins:           config.CORSOrigins,
+		vpnService:        vpnService,
+		adminOrchestrator: adminOrchestrator,
+		healthService:     healthService,
+		logger:            logger.WithComponent("api.server"),
+		corsOrigins:       config.CORSOrigins,
 		server: &http.Server{
 			Addr:         config.Address,
 			ReadTimeout:  15 * time.Second,
@@ -113,13 +108,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc("GET /api/v1/peers/{peerID}", s.getPeerHandler())
 
 	// Admin routes
-	mux.HandleFunc("GET /api/v1/admin/status", s.systemStatusHandler())
-	mux.HandleFunc("GET /api/v1/admin/nodes/stats", s.nodeStatsHandler())
-	mux.HandleFunc("GET /api/v1/admin/peers/stats", s.peerStatsHandler())
-	mux.HandleFunc("POST /api/v1/admin/rotation/force", s.forceRotationHandler())
-	mux.HandleFunc("GET /api/v1/admin/rotation/status", s.rotationStatusHandler())
-	mux.HandleFunc("POST /api/v1/admin/cleanup", s.manualCleanupHandler())
-	mux.HandleFunc("GET /api/v1/admin/health", s.systemHealthHandler())
+	mux.HandleFunc("GET /api/v1/admin/status", s.adminStatusHandler())
+	mux.HandleFunc("GET /api/v1/admin/nodes/stats", s.adminNodeStatsHandler())
+	mux.HandleFunc("GET /api/v1/admin/peers/stats", s.adminPeerStatsHandler())
+	mux.HandleFunc("POST /api/v1/admin/rotation/force", s.adminForceRotationHandler())
+	mux.HandleFunc("GET /api/v1/admin/rotation/status", s.adminRotationStatusHandler())
+	mux.HandleFunc("POST /api/v1/admin/cleanup", s.adminManualCleanupHandler())
+	mux.HandleFunc("GET /api/v1/admin/health", s.adminSystemHealthHandler())
 
 	// Provisioning routes
 	mux.HandleFunc("GET /api/v1/provisioning/status", s.provisioningStatusHandler())

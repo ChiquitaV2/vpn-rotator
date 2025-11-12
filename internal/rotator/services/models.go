@@ -1,10 +1,7 @@
-package application
+package services
 
 import (
-	"context"
 	"time"
-
-	"github.com/chiquitav2/vpn-rotator/pkg/api"
 )
 
 // ProvisioningRequiredError indicates that async provisioning is required
@@ -148,27 +145,6 @@ type CleanupResult struct {
 	Timestamp       time.Time `json:"timestamp"`
 }
 
-// VPNService defines the application layer interface for VPN operations
-type VPNService interface {
-	// Peer connection operations
-	ConnectPeer(ctx context.Context, req api.ConnectRequest) (*api.ConnectResponse, error)
-	DisconnectPeer(ctx context.Context, peerID string) error
-
-	// Peer status and information operations
-	GetPeerStatus(ctx context.Context, peerID string) (*PeerStatus, error)
-	ListActivePeers(ctx context.Context) ([]*api.PeerInfo, error)
-
-	// Node rotation operations
-	RotateNodes(ctx context.Context) error
-
-	// Resource cleanup operations
-	CleanupInactiveResources(ctx context.Context) error
-	CleanupInactiveResourcesWithOptions(ctx context.Context, options CleanupOptions) error
-
-	// Peer migration operations
-	MigratePeersFromNode(ctx context.Context, sourceNodeID, targetNodeID string) error
-}
-
 // RotationDecision represents the decision about which nodes to rotate
 type RotationDecision struct {
 	NodesToRotate []NodeRotationInfo `json:"nodes_to_rotate"`
@@ -194,4 +170,83 @@ type OrphanedResourcesReport struct {
 	OrphanedNodes int       `json:"orphaned_nodes"`
 	UnusedSubnets int       `json:"unused_subnets"`
 	Timestamp     time.Time `json:"timestamp"`
+}
+
+// CapacityReport represents a comprehensive capacity report (service layer)
+type CapacityReport struct {
+	TotalCapacity  int                         `json:"total_capacity"`
+	TotalUsed      int                         `json:"total_used"`
+	TotalAvailable int                         `json:"total_available"`
+	OverallUsage   float64                     `json:"overall_usage"`
+	Nodes          map[string]NodeCapacityInfo `json:"nodes"`
+	Timestamp      time.Time                   `json:"timestamp"`
+}
+
+// NodeCapacityInfo represents capacity information for a single node (service layer)
+type NodeCapacityInfo struct {
+	NodeID         string  `json:"node_id"`
+	MaxPeers       int     `json:"max_peers"`
+	CurrentPeers   int     `json:"current_peers"`
+	AvailablePeers int     `json:"available_peers"`
+	CapacityUsed   float64 `json:"capacity_used"`
+}
+
+// ConnectRequest represents a request to connect a peer to the VPN (service layer)
+type ConnectRequest struct {
+	PublicKey    *string `json:"public_key,omitempty"`    // User-provided public key
+	GenerateKeys bool    `json:"generate_keys,omitempty"` // Request server-side key generation
+}
+
+// ConnectResponse represents the response for a successful peer connection (service layer)
+type ConnectResponse struct {
+	PeerID           string   `json:"peer_id"`
+	ServerPublicKey  string   `json:"server_public_key"`
+	ServerIP         string   `json:"server_ip"`
+	ServerPort       int      `json:"server_port"`
+	ClientIP         string   `json:"client_ip"`
+	ClientPrivateKey *string  `json:"client_private_key,omitempty"` // Only if server-generated
+	DNS              []string `json:"dns"`
+	AllowedIPs       []string `json:"allowed_ips"`
+}
+
+// PeerListParams represents query parameters for listing peers (service layer)
+type PeerListParams struct {
+	NodeID *string `json:"node_id,omitempty"`
+	Status *string `json:"status,omitempty"`
+	Limit  *int    `json:"limit,omitempty"`
+	Offset *int    `json:"offset,omitempty"`
+}
+
+// PeerInfo represents peer information for listing operations (service layer)
+type PeerInfo struct {
+	ID              string     `json:"id"`
+	NodeID          string     `json:"node_id"`
+	PublicKey       string     `json:"public_key"`
+	AllocatedIP     string     `json:"allocated_ip"`
+	Status          string     `json:"status"`
+	CreatedAt       time.Time  `json:"created_at"`
+	LastHandshakeAt *time.Time `json:"last_handshake_at,omitempty"`
+}
+
+// PeersListResponse represents the response for listing peers (service layer)
+type PeersListResponse struct {
+	Peers      []PeerInfo `json:"peers"`
+	TotalCount int        `json:"total_count"`
+	Offset     int        `json:"offset"`
+	Limit      int        `json:"limit"`
+}
+
+// PeerStatsResponse represents the peer statistics response (service layer)
+type PeerStatsResponse struct {
+	TotalPeers   int            `json:"total_peers"`
+	ActiveNodes  int            `json:"active_nodes"`
+	Distribution map[string]int `json:"distribution"` // nodeID -> peer count
+	LastUpdated  time.Time      `json:"last_updated"`
+}
+
+// HealthResponse represents the health check response (service layer)
+type HealthResponse struct {
+	Status       string            `json:"status"`
+	Version      string            `json:"version,omitempty"`
+	Provisioning *ProvisioningInfo `json:"provisioning,omitempty"`
 }

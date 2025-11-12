@@ -1,4 +1,4 @@
-package application
+package services
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
-	"github.com/chiquitav2/vpn-rotator/pkg/api"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
@@ -41,7 +40,7 @@ func NewPeerConnectionService(
 }
 
 // ConnectPeer connects a new peer by coordinating node selection, IP allocation, and peer creation
-func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.ConnectRequest) (*api.ConnectResponse, error) {
+func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req ConnectRequest) (*ConnectResponse, error) {
 	op := s.logger.StartOp(ctx, "ConnectPeer")
 	if req.PublicKey != nil {
 		op.With(slog.String("public_key", *req.PublicKey))
@@ -140,7 +139,7 @@ func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.Connect
 		}
 	}
 
-	response := &api.ConnectResponse{
+	response := &ConnectResponse{
 		PeerID:           createdPeer.ID,
 		ServerPublicKey:  nodePublicKey,
 		ServerIP:         selectedNode.IPAddress,
@@ -194,7 +193,7 @@ func (s *PeerConnectionService) DisconnectPeer(ctx context.Context, peerID strin
 }
 
 // ListPeers lists, filters, and paginates active peers
-func (s *PeerConnectionService) ListPeers(ctx context.Context, params api.PeerListParams) (*api.PeersListResponse, error) {
+func (s *PeerConnectionService) ListPeers(ctx context.Context, params PeerListParams) (*PeersListResponse, error) {
 	op := s.logger.StartOp(ctx, "ListPeers")
 
 	activeStatus := peer.StatusActive
@@ -237,9 +236,9 @@ func (s *PeerConnectionService) ListPeers(ctx context.Context, params api.PeerLi
 	}
 	paginatedPeers := filteredPeers[start:end]
 
-	peerInfos := make([]api.PeerInfo, len(paginatedPeers))
+	peerInfos := make([]PeerInfo, len(paginatedPeers))
 	for i, peer := range paginatedPeers {
-		peerInfos[i] = api.PeerInfo{
+		peerInfos[i] = PeerInfo{
 			ID:          peer.ID,
 			NodeID:      peer.NodeID,
 			PublicKey:   peer.PublicKey,
@@ -249,7 +248,7 @@ func (s *PeerConnectionService) ListPeers(ctx context.Context, params api.PeerLi
 		}
 	}
 
-	response := &api.PeersListResponse{
+	response := &PeersListResponse{
 		Peers:      peerInfos,
 		TotalCount: len(filteredPeers),
 		Offset:     offset,
@@ -300,7 +299,7 @@ func (s *PeerConnectionService) selectNode(ctx context.Context) (*node.Node, err
 }
 
 // validateConnectRequest validates the connect request
-func (s *PeerConnectionService) validateConnectRequest(req api.ConnectRequest) error {
+func (s *PeerConnectionService) validateConnectRequest(req ConnectRequest) error {
 	if req.PublicKey == nil || *req.PublicKey == "" {
 		if !req.GenerateKeys {
 			return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "public key is required or generate_keys must be true", false, nil)
@@ -314,7 +313,7 @@ func (s *PeerConnectionService) validateConnectRequest(req api.ConnectRequest) e
 	return nil
 }
 
-func (s *PeerConnectionService) connectExistingPeer(ctx context.Context, req api.ConnectRequest) (*api.ConnectResponse, error) {
+func (s *PeerConnectionService) connectExistingPeer(ctx context.Context, req ConnectRequest) (*ConnectResponse, error) {
 	if req.PublicKey == nil {
 		return nil, nil
 	}
@@ -331,7 +330,7 @@ func (s *PeerConnectionService) connectExistingPeer(ctx context.Context, req api
 		return nil, apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeNodeNotFound, "failed to get node for existing peer", false)
 	}
 
-	return &api.ConnectResponse{
+	return &ConnectResponse{
 		PeerID:          existingPeer.ID,
 		ServerPublicKey: n.ServerPublicKey,
 		ServerIP:        n.IPAddress,

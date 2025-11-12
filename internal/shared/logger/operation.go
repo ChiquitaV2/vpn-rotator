@@ -26,7 +26,7 @@ func (l *Logger) StartOp(ctx context.Context, name string, args ...any) *Operati
 	}
 
 	attrs := append([]any{slog.String("operation", name)}, args...)
-	l.WithContext(ctx).Info("operation started", attrs...)
+	l.WithContext(ctx).Debug("operation started", attrs...)
 
 	return op
 }
@@ -52,7 +52,7 @@ func (op *Operation) Complete(msg string, args ...any) {
 		msg = "operation completed"
 	}
 
-	op.logger.WithContext(op.ctx).Info(msg, attrs...)
+	op.logger.WithContext(op.ctx).Debug(msg, attrs...)
 }
 
 // Fail logs failed operation
