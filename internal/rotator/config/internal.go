@@ -100,7 +100,7 @@ func (d *InternalDefaults) ProvisioningDefaults() ProvisioningDefaults {
 // SchedulerDefaults returns hardcoded scheduler configuration
 func (d *InternalDefaults) SchedulerDefaults() SchedulerDefaults {
 	return SchedulerDefaults{
-		CleanupCheckInterval:  1 * time.Minute,
+		CleanupCheckInterval:  5 * time.Minute,
 		ActivityCheckInterval: 30 * time.Second,
 		HealthCheckRetries:    3,
 		HealthCheckBackoff:    5 * time.Second,

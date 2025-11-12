@@ -92,7 +92,7 @@ func TestCentralizedInternalConfiguration(t *testing.T) {
 	t.Run("Scheduler Defaults", func(t *testing.T) {
 		defaults := internal.SchedulerDefaults()
 
-		assert.Equal(t, 1*time.Hour, defaults.CleanupCheckInterval)
+		assert.Equal(t, 5*time.Minute, defaults.CleanupCheckInterval)
 		assert.Equal(t, 30*time.Second, defaults.ActivityCheckInterval)
 		assert.Equal(t, 3, defaults.HealthCheckRetries)
 		assert.Equal(t, 5*time.Second, defaults.HealthCheckBackoff)
