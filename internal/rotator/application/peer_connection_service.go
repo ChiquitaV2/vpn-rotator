@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -20,7 +19,7 @@ type PeerConnectionService struct {
 	nodeService      node.NodeService
 	peerService      peer.Service
 	ipService        ip.Service
-	wireguardManager remote.WireGuardManager
+	wireguardManager node.WireGuardManager
 	logger           *applogger.Logger
 }
 
@@ -29,7 +28,7 @@ func NewPeerConnectionService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	wireguardManager remote.WireGuardManager,
+	wireguardManager node.WireGuardManager,
 	logger *applogger.Logger,
 ) *PeerConnectionService {
 	return &PeerConnectionService{
@@ -46,6 +45,19 @@ func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.Connect
 	op := s.logger.StartOp(ctx, "ConnectPeer")
 	if req.PublicKey != nil {
 		op.With(slog.String("public_key", *req.PublicKey))
+	}
+
+	var privateKey *string
+	if req.GenerateKeys {
+		keyPair, err := crypto.GenerateKeyPair()
+		if err != nil {
+			err = apperrors.NewSystemError(apperrors.ErrCodeInternal, "failed to generate key pair", false, err)
+			op.Fail(err, "key generation failed")
+			return nil, err
+		}
+		req.PublicKey = &keyPair.PublicKey
+		privateKey = &keyPair.PrivateKey
+		op.Progress("keys generated")
 	}
 
 	if err := s.validateConnectRequest(req); err != nil {
@@ -101,7 +113,7 @@ func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.Connect
 	}
 	op.With(slog.String("peer_id", createdPeer.ID))
 
-	wgConfig := remote.PeerWireGuardConfig{
+	wgConfig := node.PeerWireGuardConfig{
 		PublicKey:  createdPeer.PublicKey,
 		AllowedIPs: []string{createdPeer.AllocatedIP + "/32"},
 	}
@@ -129,13 +141,15 @@ func (s *PeerConnectionService) ConnectPeer(ctx context.Context, req api.Connect
 	}
 
 	response := &api.ConnectResponse{
-		PeerID:          createdPeer.ID,
-		ServerPublicKey: nodePublicKey,
-		ServerIP:        selectedNode.IPAddress,
-		ServerPort:      51820,
-		ClientIP:        createdPeer.AllocatedIP,
-		DNS:             []string{"1.1.1.1", "8.8.8.8"},
-		AllowedIPs:      []string{"0.0.0.0/0"},
+		PeerID:           createdPeer.ID,
+		ServerPublicKey:  nodePublicKey,
+		ServerIP:         selectedNode.IPAddress,
+		ServerPort:       51820,
+		ClientIP:         createdPeer.AllocatedIP,
+		ClientPrivateKey: privateKey,
+
+		DNS:        []string{"1.1.1.1", "8.8.8.8"},
+		AllowedIPs: []string{"0.0.0.0/0"},
 	}
 
 	op.Complete("peer connected successfully")
@@ -177,6 +191,96 @@ func (s *PeerConnectionService) DisconnectPeer(ctx context.Context, peerID strin
 
 	op.Complete("peer disconnected successfully")
 	return nil
+}
+
+// ListPeers lists, filters, and paginates active peers
+func (s *PeerConnectionService) ListPeers(ctx context.Context, params api.PeerListParams) (*api.PeersListResponse, error) {
+	op := s.logger.StartOp(ctx, "ListPeers")
+
+	activeStatus := peer.StatusActive
+	filters := &peer.Filters{Status: &activeStatus}
+
+	peers, err := s.peerService.List(ctx, filters)
+	if err != nil {
+		op.Fail(err, "failed to list active peers")
+		return nil, err
+	}
+
+	// Filter peers
+	filteredPeers := peers
+	if params.NodeID != nil {
+		var filtered []*peer.Peer
+		for _, peer := range peers {
+			if peer.NodeID == *params.NodeID {
+				filtered = append(filtered, peer)
+			}
+		}
+		filteredPeers = filtered
+	}
+	// NOTE: Add filtering by status if needed in the future
+
+	// Paginate peers
+	offset, limit := 0, len(filteredPeers)
+	if params.Offset != nil {
+		offset = *params.Offset
+	}
+	if params.Limit != nil {
+		limit = *params.Limit
+	}
+
+	start, end := offset, offset+limit
+	if start > len(filteredPeers) {
+		start = len(filteredPeers)
+	}
+	if end > len(filteredPeers) {
+		end = len(filteredPeers)
+	}
+	paginatedPeers := filteredPeers[start:end]
+
+	peerInfos := make([]api.PeerInfo, len(paginatedPeers))
+	for i, peer := range paginatedPeers {
+		peerInfos[i] = api.PeerInfo{
+			ID:          peer.ID,
+			NodeID:      peer.NodeID,
+			PublicKey:   peer.PublicKey,
+			AllocatedIP: peer.AllocatedIP,
+			Status:      string(peer.Status),
+			CreatedAt:   peer.CreatedAt,
+		}
+	}
+
+	response := &api.PeersListResponse{
+		Peers:      peerInfos,
+		TotalCount: len(filteredPeers),
+		Offset:     offset,
+		Limit:      limit,
+	}
+
+	op.Complete("listed peers successfully", slog.Int("count", len(peerInfos)))
+	return response, nil
+}
+
+// GetPeerStatus retrieves the status of a specific peer
+func (s *PeerConnectionService) GetPeerStatus(ctx context.Context, peerID string) (*PeerStatus, error) {
+	op := s.logger.StartOp(ctx, "GetPeerStatus", slog.String("peer_id", peerID))
+	existingPeer, err := s.peerService.Get(ctx, peerID)
+	if err != nil {
+		op.Fail(err, "failed to get peer")
+		return nil, err
+	}
+
+	status := &PeerStatus{
+		PeerID:      existingPeer.ID,
+		PublicKey:   existingPeer.PublicKey,
+		AllocatedIP: existingPeer.AllocatedIP,
+		Status:      string(existingPeer.Status),
+		NodeID:      existingPeer.NodeID,
+		ConnectedAt: existingPeer.CreatedAt,
+		LastSeen:    existingPeer.UpdatedAt,
+	}
+
+	op.Complete("retrieved peer status")
+	return status, nil
 }
 
 // selectNode selects an optimal node or returns error if none are available

@@ -36,7 +36,7 @@ func DefaultNetworkConfig() *NetworkConfig {
 // Validate checks if the network configuration is valid
 func (c *NetworkConfig) Validate() error {
 	// Validate base network
-	if err := ValidateCIDR(c.BaseNetwork); err != nil {
+	if err := validateCIDR(c.BaseNetwork); err != nil {
 		return sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "invalid base network", false, err).WithMetadata("base_network", c.BaseNetwork)
 	}
 
@@ -66,6 +66,9 @@ func (c *NetworkConfig) Validate() error {
 
 // ParsedBaseNetwork returns the parsed base network
 func (c *NetworkConfig) ParsedBaseNetwork() (*net.IPNet, error) {
+	if err := validateCIDR(c.BaseNetwork); err != nil {
+		return nil, err
+	}
 	_, network, err := net.ParseCIDR(c.BaseNetwork)
 	if err != nil {
 		return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "failed to parse base network", false, err).WithMetadata("base_network", c.BaseNetwork)
@@ -83,6 +86,9 @@ func (c *NetworkConfig) MaxSubnets() int {
 
 // GenerateSubnetCIDR generates a subnet CIDR for the given index
 func (c *NetworkConfig) GenerateSubnetCIDR(index int) (string, error) {
+	if err := validateCIDR(c.BaseNetwork); err != nil {
+		return "", err
+	}
 	baseIP, baseNet, err := net.ParseCIDR(c.BaseNetwork)
 	if err != nil {
 		return "", sharedErrors.NewIPError(sharedErrors.ErrCodeInvalidCIDR, "invalid base network", false, err).WithMetadata("base_network", c.BaseNetwork)

@@ -2,26 +2,9 @@ package remote
 
 import (
 	"context"
+
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 )
-
-// HealthChecker defines the interface for node health and system information operations.
-type HealthChecker interface {
-	CheckNodeHealth(ctx context.Context, nodeHost string) (*NodeHealthStatus, error)
-	GetNodeSystemInfo(ctx context.Context, nodeHost string) (*NodeSystemInfo, error)
-}
-
-// WireGuardManager defines the interface for WireGuard-related operations.
-type WireGuardManager interface {
-	GetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error)
-	AddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
-	RemovePeer(ctx context.Context, nodeHost string, publicKey string) error
-	UpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
-	ListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error)
-	SyncPeers(ctx context.Context, nodeHost string, configs []PeerWireGuardConfig) error
-	UpdateWireGuardConfig(ctx context.Context, nodeHost string, config WireGuardConfig) error
-	RestartWireGuard(ctx context.Context, nodeHost string) error
-	SaveWireGuardConfig(ctx context.Context, nodeHost string) error
-}
 
 // CommandExecutor defines the interface for executing commands and file operations on a node.
 type CommandExecutor interface {
@@ -35,7 +18,7 @@ type CommandExecutor interface {
 // capabilities is required. For dependencies, prefer the smaller, role-specific
 // interfaces (HealthChecker, WireGuardManager, CommandExecutor).
 type NodeInteractor interface {
-	HealthChecker
-	WireGuardManager
+	node.HealthChecker
+	node.WireGuardManager
 	CommandExecutor
 }

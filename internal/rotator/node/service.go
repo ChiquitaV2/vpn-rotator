@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
@@ -14,8 +13,8 @@ import (
 type Service struct {
 	repository       NodeRepository
 	cloudProvisioner CloudProvisioner
-	healthChecker    remote.HealthChecker
-	wireguardManager remote.WireGuardManager
+	healthChecker    HealthChecker
+	wireguardManager WireGuardManager
 	logger           *applogger.Logger // <-- Changed
 	config           ServiceConfig
 }
@@ -34,8 +33,8 @@ type ServiceConfig struct {
 func NewService(
 	repository NodeRepository,
 	cloudProvisioner CloudProvisioner,
-	healthChecker remote.HealthChecker,
-	wireguardManager remote.WireGuardManager,
+	healthChecker HealthChecker,
+	wireguardManager WireGuardManager,
 	logger *applogger.Logger, // <-- Changed
 	config ServiceConfig,
 ) *Service {
@@ -103,7 +102,7 @@ func (s *Service) DestroyNode(ctx context.Context, nodeID string) error {
 }
 
 // CheckNodeHealth checks node health using NodeInteractor
-func (s *Service) CheckNodeHealth(ctx context.Context, nodeID string) (*Health, error) {
+func (s *Service) CheckNodeHealth(ctx context.Context, nodeID string) (*NodeHealthStatus, error) {
 	op := s.logger.StartOp(ctx, "CheckNodeHealth", slog.String("node_id", nodeID))
 
 	// Get node from repository
@@ -124,9 +123,8 @@ func (s *Service) CheckNodeHealth(ctx context.Context, nodeID string) (*Health, 
 		return nil, domainErr
 	}
 
-	// Convert NodeInteractor health status to domain Health
-	health := &Health{
-		NodeID:          nodeID,
+	// Convert NodeInteractor health status to domain NodeHealthStatus
+	health := &NodeHealthStatus{
 		IsHealthy:       healthStatus.IsHealthy,
 		ResponseTime:    healthStatus.ResponseTime,
 		SystemLoad:      healthStatus.SystemLoad,

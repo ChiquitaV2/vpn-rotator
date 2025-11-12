@@ -108,6 +108,7 @@ const (
 	ErrCodeNodeValidation   = "node_validation"
 	ErrCodeNodeConflict     = "node_conflict"
 	ErrCodeNodeNotReady     = "node_not_ready"
+	ErrCodeNodeReq
 
 	// Peer Domain Errors
 	ErrCodePeerNotFound    = "peer_not_found"

@@ -9,24 +9,6 @@ import (
 	sharedLogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
-// Service provides IP and subnet management operations
-type Service interface {
-	// Subnet operations - return types that consumers expect
-	AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.IPNet, error)
-	ReleaseNodeSubnet(ctx context.Context, nodeID string) error
-	GetNodeSubnet(ctx context.Context, nodeID string) (*Subnet, error)
-
-	// IP operations - return types that consumers expect
-	AllocateClientIP(ctx context.Context, nodeID string) (net.IP, error)
-	ReleaseClientIP(ctx context.Context, nodeID string, ip net.IP) error
-	GetAllocatedIPs(ctx context.Context, nodeID string) ([]net.IP, error)
-	GetAvailableIPCount(ctx context.Context, nodeID string) (int, error)
-
-	// Validation and conflict checking
-	CheckIPConflict(ctx context.Context, ip string) (bool, error)
-	CheckPublicKeyConflict(ctx context.Context, publicKey string) (bool, error)
-}
-
 type service struct {
 	repository      Repository
 	subnetAllocator *SubnetAllocator
@@ -52,7 +34,8 @@ func NewService(repo Repository, config *NetworkConfig, logger *sharedLogger.Log
 
 // AllocateNodeSubnet allocates a subnet for a node and returns *net.IPNet
 func (s *service) AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.IPNet, error) {
-	if err := ValidateNodeID(nodeID); err != nil {
+	req := &SubnetRequest{NodeID: nodeID}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
@@ -109,7 +92,8 @@ func (s *service) AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.I
 
 // ReleaseNodeSubnet releases a node's subnet allocation
 func (s *service) ReleaseNodeSubnet(ctx context.Context, nodeID string) error {
-	if err := ValidateNodeID(nodeID); err != nil {
+	req := &SubnetRequest{NodeID: nodeID}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return err
 	}
@@ -141,7 +125,8 @@ func (s *service) ReleaseNodeSubnet(ctx context.Context, nodeID string) error {
 
 // GetNodeSubnet retrieves a subnet for a node
 func (s *service) GetNodeSubnet(ctx context.Context, nodeID string) (*Subnet, error) {
-	if err := ValidateNodeID(nodeID); err != nil {
+	req := &SubnetRequest{NodeID: nodeID}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
@@ -158,7 +143,8 @@ func (s *service) GetNodeSubnet(ctx context.Context, nodeID string) (*Subnet, er
 
 // AllocateClientIP allocates an IP address within a node's subnet and returns net.IP
 func (s *service) AllocateClientIP(ctx context.Context, nodeID string) (net.IP, error) {
-	if err := ValidateNodeID(nodeID); err != nil {
+	req := &SubnetRequest{NodeID: nodeID}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
@@ -196,7 +182,8 @@ func (s *service) AllocateClientIP(ctx context.Context, nodeID string) (net.IP, 
 
 // ReleaseClientIP releases an IP address allocation
 func (s *service) ReleaseClientIP(ctx context.Context, nodeID string, ip net.IP) error {
-	if err := ValidateNodeID(nodeID); err != nil {
+	req := &SubnetRequest{NodeID: nodeID}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return err
 	}
@@ -210,7 +197,8 @@ func (s *service) ReleaseClientIP(ctx context.Context, nodeID string, ip net.IP)
 
 // GetAllocatedIPs returns all allocated IPs for a node as []net.IP
 func (s *service) GetAllocatedIPs(ctx context.Context, nodeID string) ([]net.IP, error) {
-	if err := ValidateNodeID(nodeID); err != nil {
+	req := &SubnetRequest{NodeID: nodeID}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return nil, err
 	}
@@ -233,7 +221,8 @@ func (s *service) GetAllocatedIPs(ctx context.Context, nodeID string) ([]net.IP,
 
 // GetAvailableIPCount returns the number of available IPs for a node
 func (s *service) GetAvailableIPCount(ctx context.Context, nodeID string) (int, error) {
-	if err := ValidateNodeID(nodeID); err != nil {
+	req := &SubnetRequest{NodeID: nodeID}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for node ID", err)
 		return 0, err
 	}
@@ -261,7 +250,8 @@ func (s *service) GetAvailableIPCount(ctx context.Context, nodeID string) (int, 
 
 // CheckIPConflict checks if an IP is already allocated
 func (s *service) CheckIPConflict(ctx context.Context, ip string) (bool, error) {
-	if err := ValidateIPv4Address(ip); err != nil {
+	_, err := NewIPv4Address(ip)
+	if err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for IP address", err)
 		return false, err
 	}
@@ -271,7 +261,8 @@ func (s *service) CheckIPConflict(ctx context.Context, ip string) (bool, error) 
 
 // CheckPublicKeyConflict checks if a public key is already in use
 func (s *service) CheckPublicKeyConflict(ctx context.Context, publicKey string) (bool, error) {
-	if err := ValidateWireGuardPublicKey(publicKey); err != nil {
+	req := &AllocationRequest{PublicKey: publicKey, NodeID: "tmp", PeerID: "tmp"}
+	if err := req.Validate(); err != nil {
 		s.logger.ErrorCtx(ctx, "validation failed for public key", err)
 		return false, err
 	}

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 
@@ -172,18 +173,6 @@ func (s *SSHNodeInteractor) uninstrumentedDownloadFile(ctx context.Context, node
 	return errors.NewSystemError("not_implemented", "file download not implemented yet", false, nil)
 }
 
-// GetCircuitBreakerStats returns circuit breaker statistics for all hosts
-func (s *SSHNodeInteractor) GetCircuitBreakerStats() map[string]CircuitBreakerStats {
-	s.cbMutex.RLock()
-	defer s.cbMutex.RUnlock()
-
-	stats := make(map[string]CircuitBreakerStats)
-	for host, cb := range s.circuitBreakers {
-		stats[host] = cb.GetStats()
-	}
-	return stats
-}
-
 // ResetCircuitBreaker resets the circuit breaker for a specific host
 func (s *SSHNodeInteractor) ResetCircuitBreaker(host string) {
 	s.cbMutex.RLock()
@@ -248,17 +237,17 @@ func instrumentWithResult[T any](s *SSHNodeInteractor, ctx context.Context, oper
 }
 
 // CheckNodeHealth with metrics collection
-func (s *SSHNodeInteractor) CheckNodeHealth(ctx context.Context, nodeHost string) (*NodeHealthStatus, error) {
+func (s *SSHNodeInteractor) CheckNodeHealth(ctx context.Context, nodeHost string) (*node.NodeHealthStatus, error) {
 	return instrumentWithResult(
 		s,
 		ctx,
 		"check_health",
 		nodeHost,
 		nil,
-		func() (*NodeHealthStatus, error) {
+		func() (*node.NodeHealthStatus, error) {
 			return s.uninstrumentedCheckNodeHealth(ctx, nodeHost)
 		},
-		func(result *NodeHealthStatus) []any {
+		func(result *node.NodeHealthStatus) []any {
 			if result == nil {
 				return nil
 			}
@@ -275,17 +264,18 @@ func (s *SSHNodeInteractor) CheckNodeHealth(ctx context.Context, nodeHost string
 }
 
 // GetNodeSystemInfo with metrics collection
-func (s *SSHNodeInteractor) GetNodeSystemInfo(ctx context.Context, nodeHost string) (*NodeSystemInfo, error) {
+func (s *SSHNodeInteractor) GetNodeSystemInfo(ctx context.Context, nodeHost string) (*node.NodeSystemInfo, error) {
 	return instrumentWithResult(
 		s,
 		ctx,
 		"get_system_info",
 		nodeHost,
 		nil,
-		func() (*NodeSystemInfo, error) {
-			return s.uninstrumentedGetNodeSystemInfo(ctx, nodeHost)
+		func() (*node.NodeSystemInfo, error) {
+			// return s.uninstrumentedGetNodeSystemInfo(ctx, nodeHost)
+			return nil, nil
 		},
-		func(result *NodeSystemInfo) []any {
+		func(result *node.NodeSystemInfo) []any {
 			if result == nil {
 				return nil
 			}
@@ -299,7 +289,7 @@ func (s *SSHNodeInteractor) GetNodeSystemInfo(ctx context.Context, nodeHost stri
 }
 
 // AddPeer with metrics collection
-func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) AddPeer(ctx context.Context, nodeHost string, config node.PeerWireGuardConfig) error {
 	return s.instrument(
 		ctx,
 		"add_peer",
@@ -330,17 +320,17 @@ func (s *SSHNodeInteractor) RemovePeer(ctx context.Context, nodeHost string, pub
 }
 
 // GetWireGuardStatus with metrics collection
-func (s *SSHNodeInteractor) GetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error) {
+func (s *SSHNodeInteractor) GetWireGuardStatus(ctx context.Context, nodeHost string) (*node.WireGuardStatus, error) {
 	return instrumentWithResult(
 		s,
 		ctx,
 		"get_wireguard_status",
 		nodeHost,
 		nil,
-		func() (*WireGuardStatus, error) {
+		func() (*node.WireGuardStatus, error) {
 			return s.uninstrumentedGetWireGuardStatus(ctx, nodeHost)
 		},
-		func(result *WireGuardStatus) []any {
+		func(result *node.WireGuardStatus) []any {
 			if result == nil {
 				return nil
 			}
@@ -353,7 +343,7 @@ func (s *SSHNodeInteractor) GetWireGuardStatus(ctx context.Context, nodeHost str
 }
 
 // UpdatePeer with metrics collection
-func (s *SSHNodeInteractor) UpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) UpdatePeer(ctx context.Context, nodeHost string, config node.PeerWireGuardConfig) error {
 	return s.instrument(
 		ctx,
 		"update_peer",
@@ -369,7 +359,7 @@ func (s *SSHNodeInteractor) UpdatePeer(ctx context.Context, nodeHost string, con
 }
 
 // SyncPeers with metrics collection
-func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, configs []PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, configs []node.PeerWireGuardConfig) error {
 	return s.instrument(
 		ctx,
 		"sync_peers",
@@ -384,7 +374,7 @@ func (s *SSHNodeInteractor) SyncPeers(ctx context.Context, nodeHost string, conf
 }
 
 // UpdateWireGuardConfig with metrics collection
-func (s *SSHNodeInteractor) UpdateWireGuardConfig(ctx context.Context, nodeHost string, config WireGuardConfig) error {
+func (s *SSHNodeInteractor) UpdateWireGuardConfig(ctx context.Context, nodeHost string, config node.WireGuardConfig) error {
 	return s.instrument(
 		ctx,
 		"update_wireguard_config",
@@ -425,17 +415,17 @@ func (s *SSHNodeInteractor) SaveWireGuardConfig(ctx context.Context, nodeHost st
 }
 
 // ListPeers with metrics collection
-func (s *SSHNodeInteractor) ListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error) {
+func (s *SSHNodeInteractor) ListPeers(ctx context.Context, nodeHost string) ([]*node.WireGuardPeerStatus, error) {
 	return instrumentWithResult(
 		s,
 		ctx,
 		"list_peers",
 		nodeHost,
 		nil,
-		func() ([]*WireGuardPeerStatus, error) {
+		func() ([]*node.WireGuardPeerStatus, error) {
 			return s.uninstrumentedListPeers(ctx, nodeHost)
 		},
-		func(result []*WireGuardPeerStatus) []any {
+		func(result []*node.WireGuardPeerStatus) []any {
 			return []any{"peer_count", len(result)}
 		},
 	)
@@ -496,9 +486,9 @@ func (s *SSHNodeInteractor) DownloadFile(ctx context.Context, nodeHost string, r
 // GetMetrics returns comprehensive metrics about NodeInteractor operations
 func (s *SSHNodeInteractor) GetMetrics() NodeInteractorMetrics {
 	return NodeInteractorMetrics{
-		Operations:      s.metricsCollector.GetOperationMetrics(),
-		Connections:     s.metricsCollector.GetConnectionMetrics(),
-		CircuitBreakers: s.GetCircuitBreakerStats(),
+		Operations:  s.metricsCollector.GetOperationMetrics(),
+		Connections: s.metricsCollector.GetConnectionMetrics(),
+		// CircuitBreakers: s.GetCircuitBreakerStats(),
 	}
 }
 

@@ -41,7 +41,7 @@ type adminService struct {
 	peerService peer.Service
 	ipService   ip.Service
 	vpnService  VPNService // For rotation and cleanup operations
-	provisioner *ProvisioningOrchestrator
+	provisioner *ProvisioningService
 	logger      *applogger.Logger
 }
 
@@ -51,7 +51,7 @@ func NewAdminService(
 	peerService peer.Service,
 	ipService ip.Service,
 	vpnService VPNService,
-	provisioner *ProvisioningOrchestrator,
+	provisioner *ProvisioningService,
 	logger *applogger.Logger,
 ) AdminService {
 	return &adminService{
@@ -103,7 +103,7 @@ func (s *adminService) GetSystemStatus(ctx context.Context) (*SystemStatus, erro
 		health, err := s.nodeService.CheckNodeHealth(ctx, activeNode.ID)
 		if err != nil {
 			s.logger.ErrorCtx(ctx, "failed to get node health", err, slog.String("node_id", activeNode.ID))
-			health = &node.Health{IsHealthy: false, LastChecked: time.Now()}
+			health = &node.NodeHealthStatus{IsHealthy: false, LastChecked: time.Now()}
 		}
 
 		nodeStatuses[activeNode.ID] = NodeStatus{

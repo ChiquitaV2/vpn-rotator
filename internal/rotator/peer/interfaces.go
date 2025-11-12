@@ -5,6 +5,33 @@ import (
 	"time"
 )
 
+// Service defines the business logic interface for peer operations
+type Service interface {
+	// Core operations
+	Create(ctx context.Context, req *CreateRequest) (*Peer, error)
+	Get(ctx context.Context, peerID string) (*Peer, error)
+	GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error)
+	List(ctx context.Context, filters *Filters) ([]*Peer, error)
+	Remove(ctx context.Context, peerID string) error
+
+	// Status operations
+	UpdateStatus(ctx context.Context, peerID string, status Status) error
+
+	// Migration operations
+	Migrate(ctx context.Context, peerID, newNodeID, newIP string) error
+	GetByNode(ctx context.Context, nodeID string) ([]*Peer, error)
+	GetActiveByNode(ctx context.Context, nodeID string) ([]*Peer, error)
+
+	// Query operations
+	CountActiveByNode(ctx context.Context, nodeID string) (int64, error)
+	GetInactive(ctx context.Context, inactiveMinutes int) ([]*Peer, error)
+	GetStatistics(ctx context.Context) (*Statistics, error)
+
+	// Batch operations for better performance
+	CreateBatch(ctx context.Context, requests []*CreateRequest) ([]*Peer, error)
+	UpdateStatusBatch(ctx context.Context, updates map[string]Status) error
+}
+
 // Repository defines the interface for peer data access
 type Repository interface {
 	// Core CRUD operations

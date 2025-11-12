@@ -41,7 +41,7 @@ func NewServiceFactory(cfg *config.Config, logger *logger.Logger) *ServiceFactor
 type ServiceComponents struct {
 	// Infrastructure layer
 	Store            db.Store
-	CloudProvisioner provisioner.CloudProvisioner
+	CloudProvisioner application.CloudProvisioner
 	NodeInteractor   remote.NodeInteractor
 
 	// Event system
@@ -50,15 +50,18 @@ type ServiceComponents struct {
 	ProgressReporter events.ProgressReporter
 
 	// Domain services
-	NodeService         node.NodeService
-	PeerService         peer.Service
-	IPService           ip.Service
-	ProvisioningService *node.ProvisioningService
+	NodeService node.NodeService
+	PeerService peer.Service
+	IPService   ip.Service
 
 	// Application services
-	VPNService               application.VPNService
-	AdminService             application.AdminService
-	ProvisioningOrchestrator *application.ProvisioningOrchestrator
+	PeerConnectionSvr      *application.PeerConnectionService
+	AdminService           application.AdminService
+	ProvisioningService    *application.ProvisioningService
+	NodeRotatorService     *application.NodeRotationService
+	ResourceCleanupService *application.ResourceCleanupService
+	VPNOrchestrator        application.VPNService
+	HealthService          application.HealthService
 
 	// Repositories
 	NodeRepository   node.NodeRepository
@@ -295,6 +298,16 @@ func (f *ServiceFactory) createDomainServices(c *ServiceComponents) error {
 	c.NodeService = node.NewService(c.NodeRepository, c.CloudProvisioner, c.NodeInteractor, c.NodeInteractor, f.logger, nodeSvcConfig)
 	f.logger.DebugContext(ctx, "node service created successfully")
 
+	op.Complete("domain services initialized successfully")
+	return nil
+}
+
+func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
+	ctx := context.Background()
+	op := f.logger.StartOp(ctx, "create_application_services")
+
+	f.logger.DebugContext(ctx, "initializing application services")
+
 	// Create provisioning service
 	if err := f.createProvisioningService(c); err != nil {
 		provErr := errors.WrapWithDomain(err, errors.DomainProvisioning, errors.ErrCodeInternal,
@@ -304,7 +317,66 @@ func (f *ServiceFactory) createDomainServices(c *ServiceComponents) error {
 		return provErr
 	}
 
-	op.Complete("domain services initialized successfully")
+	// Create peer connection service
+	c.PeerConnectionSvr = application.NewPeerConnectionService(
+		c.NodeService,
+		c.PeerService,
+		c.IPService,
+		c.NodeInteractor,
+		f.logger,
+	)
+	f.logger.DebugContext(ctx, "peer connection service created successfully")
+
+	// Create resource cleanup service
+	c.ResourceCleanupService = application.NewResourceCleanupService(
+		c.NodeService,
+		c.PeerService,
+		c.IPService,
+		f.logger,
+	)
+	f.logger.DebugContext(ctx, "resource cleanup service created successfully")
+
+	// Create node rotation service
+	c.NodeRotatorService = application.NewNodeRotationService(
+		c.NodeService,
+		c.PeerService,
+		c.IPService,
+		c.NodeInteractor,
+		c.ProvisioningService,
+		c.ResourceCleanupService,
+		f.logger,
+	)
+	f.logger.DebugContext(ctx, "node rotation service created successfully")
+
+	// Create VPN orchestrator service
+	c.VPNOrchestrator = application.NewVPNOrchestratorService(
+		c.PeerConnectionSvr,
+		c.NodeRotatorService,
+		c.ResourceCleanupService,
+		c.ProvisioningService,
+		c.PeerService,
+		f.logger,
+	)
+	f.logger.DebugContext(ctx, "VPN orchestrator service created successfully")
+
+	// Create admin service
+	adminService := application.NewAdminService(
+		c.NodeService,
+		c.PeerService,
+		c.IPService,
+		c.VPNOrchestrator,
+		c.ProvisioningService,
+		f.logger,
+	)
+	c.AdminService = adminService
+	f.logger.DebugContext(ctx, "admin service created successfully")
+
+	// Create health service
+	healthService := application.NewHealthService(c.ProvisioningService)
+	c.HealthService = healthService
+	f.logger.DebugContext(ctx, "health service created successfully")
+
+	op.Complete("application services initialized successfully")
 	return nil
 }
 
@@ -315,65 +387,19 @@ func (f *ServiceFactory) createProvisioningService(c *ServiceComponents) error {
 	f.logger.DebugContext(ctx, "initializing provisioning service")
 
 	provConfig := f.createProvisioningServiceConfig()
-	provService := node.NewProvisioningService(
+	provService := application.NewProvisioningService(
 		c.NodeService,
 		c.NodeRepository,
 		c.CloudProvisioner,
 		c.NodeInteractor,
 		c.IPService,
-		f.logger,
+		c.EventPublisher.Provisioning,
 		provConfig,
+		f.logger,
 	)
-	provService.SetProgressReporter(c.ProgressReporter)
 	c.ProvisioningService = provService
 
 	op.Complete("provisioning service initialized successfully")
-	return nil
-}
-
-func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
-	ctx := context.Background()
-	op := f.logger.StartOp(ctx, "create_application_services")
-
-	f.logger.DebugContext(ctx, "initializing application services")
-
-	// Create provisioning orchestrator
-	orchestratorConfig := f.createOrchestratorConfig()
-	provOrchestrator := application.NewProvisioningOrchestratorWithConfig(
-		c.ProvisioningService,
-		c.NodeService,
-		c.EventPublisher.Provisioning,
-		orchestratorConfig,
-		f.logger,
-	)
-	c.ProvisioningOrchestrator = provOrchestrator
-	f.logger.DebugContext(ctx, "provisioning orchestrator created successfully")
-
-	// Create VPN service
-	vpnService := application.NewVPNOrchestratorService(
-		c.NodeService,
-		c.PeerService,
-		c.IPService,
-		c.NodeInteractor,
-		c.ProvisioningOrchestrator,
-		f.logger,
-	)
-	c.VPNService = vpnService
-	f.logger.DebugContext(ctx, "VPN service created successfully")
-
-	// Create admin service
-	adminService := application.NewAdminService(
-		c.NodeService,
-		c.PeerService,
-		c.IPService,
-		vpnService,
-		c.ProvisioningOrchestrator,
-		f.logger,
-	)
-	c.AdminService = adminService
-	f.logger.DebugContext(ctx, "admin service created successfully")
-
-	op.Complete("application services initialized successfully")
 	return nil
 }
 
@@ -413,13 +439,13 @@ func (f *ServiceFactory) createNodeInteractorConfig() remote.NodeInteractorConfi
 	}
 }
 
-func (f *ServiceFactory) createProvisioningServiceConfig() node.ProvisioningServiceConfig {
+func (f *ServiceFactory) createProvisioningServiceConfig() application.ProvisioningServiceConfig {
 	// Use centralized internal defaults for provisioning configuration
 	eventDefaults := f.internalDefaults.EventSystemDefaults()
 	nodeDefaults := f.internalDefaults.NodeInteractorDefaults()
 	provDefaults := f.internalDefaults.ProvisioningDefaults()
 
-	return node.ProvisioningServiceConfig{
+	return application.ProvisioningServiceConfig{
 		ProvisioningTimeout:    eventDefaults.WorkerTimeout,
 		ReadinessTimeout:       provDefaults.ReadinessTimeout,
 		ReadinessCheckInterval: provDefaults.ReadinessCheckInterval,
@@ -440,16 +466,6 @@ func (f *ServiceFactory) createEventBusConfig() sharedevents.EventBusConfig {
 		Mode:       "simple", // Hardcoded internal default
 		Timeout:    eventDefaults.WorkerTimeout,
 		MaxRetries: 3, // Hardcoded internal default
-	}
-}
-
-func (f *ServiceFactory) createOrchestratorConfig() application.OrchestratorConfig {
-	eventDefaults := f.internalDefaults.EventSystemDefaults()
-	return application.OrchestratorConfig{
-		WorkerTimeout:          eventDefaults.WorkerTimeout,
-		ETAHistoryRetention:    eventDefaults.ETAHistoryRetention,
-		DefaultProvisioningETA: eventDefaults.DefaultProvisioningETA,
-		MaxConcurrentJobs:      eventDefaults.MaxConcurrentJobs,
 	}
 }
 

@@ -64,7 +64,7 @@ func (a *SubnetAllocator) ValidateSubnetAllocation(subnet *Subnet) error {
 	}
 
 	// Validate alignment
-	if err := ValidateSubnetAlignment(subnet.Network); err != nil {
+	if err := validateSubnetAlignment(subnet.Network); err != nil {
 		return err
 	}
 
@@ -74,7 +74,7 @@ func (a *SubnetAllocator) ValidateSubnetAllocation(subnet *Subnet) error {
 		return err
 	}
 
-	return ValidateSubnetInBaseNetwork(subnet.Network, baseNet)
+	return validateSubnetInBaseNetwork(subnet.Network, baseNet)
 }
 
 // IPAllocator handles IP allocation within subnets
@@ -124,20 +124,6 @@ func (a *IPAllocator) FindNextAvailableIP(subnet *Subnet, allocatedIPs []*IPv4Ad
 	}
 
 	return nil, sharedErrors.NewIPError(sharedErrors.ErrCodeSubnetExhausted, "subnet has no available IPs", false, nil).WithMetadata("subnet_cidr", subnet.CIDR)
-}
-
-// ipGreaterThan checks if ip1 > ip2
-func ipGreaterThan(ip1, ip2 net.IP) bool {
-	ip1 = ip1.To4()
-	ip2 = ip2.To4()
-	for i := 0; i < len(ip1); i++ {
-		if ip1[i] > ip2[i] {
-			return true
-		} else if ip1[i] < ip2[i] {
-			return false
-		}
-	}
-	return false
 }
 
 // FindLeastUtilizedSubnet finds the subnet with the lowest utilization

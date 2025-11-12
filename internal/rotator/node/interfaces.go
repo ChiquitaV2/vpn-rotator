@@ -11,7 +11,7 @@ type NodeService interface {
 	DestroyNode(ctx context.Context, nodeID string) error
 
 	// Node health and status operations
-	CheckNodeHealth(ctx context.Context, nodeID string) (*Health, error)
+	CheckNodeHealth(ctx context.Context, nodeID string) (*NodeHealthStatus, error)
 	UpdateNodeStatus(ctx context.Context, nodeID string, status Status) error
 
 	// Node capacity and selection operations
@@ -40,7 +40,7 @@ type NodeRepository interface {
 
 	// Status and health operations
 	UpdateStatus(ctx context.Context, nodeID string, status Status, version int64) error
-	UpdateHealth(ctx context.Context, nodeID string, health *Health) error
+	UpdateHealth(ctx context.Context, nodeID string, health *NodeHealthStatus) error
 	GetUnhealthyNodes(ctx context.Context) ([]*Node, error)
 	GetActiveNodes(ctx context.Context) ([]*Node, error)
 
@@ -114,4 +114,23 @@ type CloudNodeStatus struct {
 	ServerID  string `json:"server_id"`
 	Status    string `json:"status"`
 	IPAddress string `json:"ip_address"`
+}
+
+// HealthChecker defines the interface for node health and system information operations.
+type HealthChecker interface {
+	CheckNodeHealth(ctx context.Context, nodeHost string) (*NodeHealthStatus, error)
+	GetNodeSystemInfo(ctx context.Context, nodeHost string) (*NodeSystemInfo, error)
+}
+
+// WireGuardManager defines the interface for WireGuard-related operations.
+type WireGuardManager interface {
+	GetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error)
+	AddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
+	RemovePeer(ctx context.Context, nodeHost string, publicKey string) error
+	UpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error
+	ListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error)
+	SyncPeers(ctx context.Context, nodeHost string, configs []PeerWireGuardConfig) error
+	UpdateWireGuardConfig(ctx context.Context, nodeHost string, config WireGuardConfig) error
+	RestartWireGuard(ctx context.Context, nodeHost string) error
+	SaveWireGuardConfig(ctx context.Context, nodeHost string) error
 }

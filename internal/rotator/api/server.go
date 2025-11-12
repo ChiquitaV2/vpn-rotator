@@ -12,12 +12,14 @@ import (
 
 // Server represents the HTTP API server with proper lifecycle management.
 type Server struct {
-	server                   *http.Server
-	vpnService               application.VPNService
-	adminService             application.AdminService
-	provisioningOrchestrator *application.ProvisioningOrchestrator
-	logger                   *applogger.Logger // <-- Changed
-	corsOrigins              []string
+	server                *http.Server
+	vpnService            application.VPNService
+	peerConnectionService *application.PeerConnectionService
+	adminService          application.AdminService
+	healthService         application.HealthService
+	provisioningService   *application.ProvisioningService
+	logger                *applogger.Logger // <-- Changed
+	corsOrigins           []string
 }
 
 // ServerConfig contains configuration for the API server.
@@ -30,16 +32,20 @@ type ServerConfig struct {
 func NewServerWithAsyncProvisioning(
 	config ServerConfig,
 	vpnService application.VPNService,
+	peerConnectionService *application.PeerConnectionService,
 	adminService application.AdminService,
-	provisioningOrchestrator *application.ProvisioningOrchestrator,
+	healthService application.HealthService,
+	provisioningService *application.ProvisioningService,
 	logger *applogger.Logger, // <-- Changed
 ) *Server {
 	return &Server{
-		vpnService:               vpnService,
-		adminService:             adminService,
-		provisioningOrchestrator: provisioningOrchestrator,
-		logger:                   logger.WithComponent("api.server"), // <-- Scoped logger
-		corsOrigins:              config.CORSOrigins,
+		vpnService:            vpnService,
+		peerConnectionService: peerConnectionService,
+		adminService:          adminService,
+		healthService:         healthService,
+		provisioningService:   provisioningService,
+		logger:                logger.WithComponent("api.server"), // <-- Scoped logger
+		corsOrigins:           config.CORSOrigins,
 		server: &http.Server{
 			Addr:         config.Address,
 			ReadTimeout:  15 * time.Second,

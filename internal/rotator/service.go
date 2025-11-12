@@ -112,8 +112,7 @@ func (s *Service) initializeScheduler() error {
 		s.config.Rotation.Interval,             // User-configurable rotation interval
 		schedulerDefaults.CleanupCheckInterval, // Internal default cleanup check interval
 		s.config.Rotation.CleanupAge,           // User-configurable cleanup age
-		s.components.VPNService,
-		s.logger,
+		s.components.VPNOrchestrator, s.logger,
 	)
 
 	s.scheduler = schedulerManager
@@ -131,9 +130,11 @@ func (s *Service) initializeAPIServer() error {
 			Address:     s.config.API.ListenAddr,
 			CORSOrigins: []string{"*"}, // TODO: Make configurable
 		},
-		s.components.VPNService,
+		s.components.VPNOrchestrator,
+		s.components.PeerConnectionSvr,
 		s.components.AdminService,
-		s.components.ProvisioningOrchestrator,
+		s.components.HealthService,
+		s.components.ProvisioningService,
 		s.logger,
 	)
 
@@ -160,11 +161,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 	// Start components in dependency order
 	// 1. Start provisioning orchestrator worker if available
-	if s.components.ProvisioningOrchestrator != nil {
-		op.Progress("starting component", slog.String("component", "provisioning_orchestrator"))
+	if s.components.ProvisioningService != nil {
+		op.Progress("starting component", slog.String("component", "provisioning_service"))
 
-		s.components.ProvisioningOrchestrator.StartWorker(s.ctx)
-		s.logger.InfoContext(ctx, "provisioning orchestrator worker started")
+		s.components.ProvisioningService.StartWorker(s.ctx)
 	}
 
 	// 2. manager is a dependency for scheduler, so it should be ready first
@@ -319,7 +319,7 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 
 	// 3. Clean up active nodes before shutdown
-	if s.components.VPNService != nil {
+	if s.components.PeerConnectionSvr != nil {
 		op.Progress("stopping component", slog.String("component", "node_cleanup"))
 
 		if err := s.cleanupActiveNodes(shutdownCtx); err != nil {

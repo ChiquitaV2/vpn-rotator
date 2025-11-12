@@ -1,13 +1,12 @@
 # VPN Rotator
 
-VPN Rotator is a self-hosted system that automatically rotates WireGuard VPN nodes on Hetzner Cloud to enhance privacy and security. It provisions nodes on-demand, automatically destroys idle nodes to save costs, and handles seamless client migration during rotation.
+VPN Rotator is a self-hosted system that automatically rotates WireGuard VPN nodes on Hetzner Cloud to enhance privacy and security. 
+It provisions nodes on-demand, automatically destroys idle nodes to save costs, and handles seamless client migration during rotation.
 
 ## Features
 
 - **Comprehensive Peer Management**: Full lifecycle management of WireGuard peers with automatic IP allocation and node
   assignment.
-- **Race Condition Protection**: Prevents multiple nodes from being provisioned simultaneously during concurrent
-  requests.
 - **Automatic Server Rotation**: Automatically provisions new VPN servers and decommissions old ones with seamless peer
   migration.
 - **Dynamic Provisioning**: Dynamically selects server types and locations from Hetzner Cloud for better resilience.
@@ -36,23 +35,12 @@ The system uses a **coordinated provisioning architecture** for reliable node ma
     - A **database layer** with migrations, connection pooling, and transaction support.
 - **Connector CLI**: A client-side application that fetches the latest configuration from the rotator service and configures the local WireGuard interface.
 
-### Coordinated Provisioning
-
-The system ensures reliable node provisioning through:
-
-- **Atomic Resource Management**: IP allocation, infrastructure provisioning, and database records are managed
-  atomically
-- **Comprehensive Error Handling**: Automatic rollback on any failure in the provisioning chain
-- **Consistent Configuration**: Centralized provisioning logic ensures consistent node setup
-- **Enhanced Monitoring**: Detailed provisioning metrics and structured logging
-
-For a more detailed overview of the architecture, see [docs/architecture-detailed.md](docs/architecture-detailed.md).
 
 ## Getting Started
 
 ### Prerequisites
 
-- [Go](https://golang.org/doc/install) (version 1.22 or later)
+- [Go](https://golang.org/doc/install) (version 1.25 or later)
 - [Docker](https://docs.docker.com/get-docker/) (for containerized deployment)
 - A [Hetzner Cloud](https://www.hetzner.com/cloud) account and API token.
 - An SSH key added to your Hetzner Cloud project.
@@ -81,7 +69,6 @@ The service supports both YAML configuration files and environment variables. Fo
 
 For complete configuration options, examples, and best practices, see:
 - [Configuration Guide](docs/configuration.md) - Comprehensive configuration documentation
-- [Configuration Examples](docs/configuration-examples.md) - Ready-to-use configuration templates
 
 ### Running the Service
 

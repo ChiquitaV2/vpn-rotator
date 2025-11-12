@@ -50,45 +50,45 @@ func ValidateDisconnectRequest(req *api.DisconnectRequest) apperrors.DomainError
 }
 
 // ValidatePeerListParams validates query parameters for peer listing
-func ValidatePeerListParams(r *http.Request) (map[string]interface{}, error) {
-	params := make(map[string]interface{})
+func ValidatePeerListParams(r *http.Request) (api.PeerListParams, error) {
+	var params api.PeerListParams
 
 	// Validate node_id parameter
 	if nodeID := r.URL.Query().Get("node_id"); nodeID != "" {
 		if strings.TrimSpace(nodeID) == "" {
-			return nil, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "node_id cannot be empty", false, nil).
+			return params, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "node_id cannot be empty", false, nil).
 				WithMetadata("field", "node_id")
 		}
-		params["node_id"] = nodeID
+		params.NodeID = &nodeID
 	}
 
 	// Validate status parameter
 	if status := r.URL.Query().Get("status"); status != "" {
 		if !isValidPeerStatus(status) {
-			return nil, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "status must be one of: active, disconnected, removing", false, nil).
+			return params, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "status must be one of: active, disconnected, removing", false, nil).
 				WithMetadata("field", "status")
 		}
-		params["status"] = status
+		params.Status = &status
 	}
 
 	// Validate limit parameter
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil || limit < 1 || limit > 1000 {
-			return nil, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "limit must be a number between 1 and 1000", false, err).
+			return params, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "limit must be a number between 1 and 1000", false, err).
 				WithMetadata("field", "limit")
 		}
-		params["limit"] = limit
+		params.Limit = &limit
 	}
 
 	// Validate offset parameter
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
 		offset, err := strconv.Atoi(offsetStr)
 		if err != nil || offset < 0 {
-			return nil, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "offset must be a non-negative number", false, err).
+			return params, apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "offset must be a non-negative number", false, err).
 				WithMetadata("field", "offset")
 		}
-		params["offset"] = offset
+		params.Offset = &offset
 	}
 
 	return params, nil

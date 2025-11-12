@@ -8,7 +8,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -18,12 +17,13 @@ import (
 
 // NodeRotationService handles node rotation and peer migration operations
 type NodeRotationService struct {
-	nodeService              node.NodeService
-	peerService              peer.Service
-	ipService                ip.Service
-	wireguardManager         remote.WireGuardManager
-	provisioningOrchestrator *ProvisioningOrchestrator
-	logger                   *applogger.Logger
+	nodeService            node.NodeService
+	peerService            peer.Service
+	ipService              ip.Service
+	wireguardManager       node.WireGuardManager
+	provisioningService    *ProvisioningService
+	resourceCleanupService *ResourceCleanupService
+	logger                 *applogger.Logger
 }
 
 // NewNodeRotationService creates a new node rotation service with unified provisioning
@@ -31,17 +31,19 @@ func NewNodeRotationService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	wireguardManager remote.WireGuardManager,
-	provisioningOrchestrator *ProvisioningOrchestrator,
+	wireguardManager node.WireGuardManager,
+	provisioningService *ProvisioningService,
+	resourceCleanupService *ResourceCleanupService,
 	logger *applogger.Logger,
 ) *NodeRotationService {
 	return &NodeRotationService{
-		nodeService:              nodeService,
-		peerService:              peerService,
-		ipService:                ipService,
-		wireguardManager:         wireguardManager,
-		provisioningOrchestrator: provisioningOrchestrator,
-		logger:                   logger.WithComponent("rotation.service"),
+		nodeService:            nodeService,
+		peerService:            peerService,
+		ipService:              ipService,
+		wireguardManager:       wireguardManager,
+		provisioningService:    provisioningService,
+		resourceCleanupService: resourceCleanupService,
+		logger:                 logger.WithComponent("rotation.service"),
 	}
 }
 
@@ -88,14 +90,14 @@ func (s *NodeRotationService) RotateNodes(ctx context.Context) error {
 			s.logger.ErrorCtx(ctx, "failed to migrate peers during rotation", err, slog.String("source_node_id", nodeToRotate.NodeID), slog.String("target_node_id", newNode.ID))
 			rotationErrors = append(rotationErrors, err)
 
-			if destroyErr := s.provisioningOrchestrator.DestroyNode(ctx, newNode.ID); destroyErr != nil {
+			if destroyErr := s.provisioningService.DestroyNode(ctx, newNode.ID); destroyErr != nil {
 				s.logger.ErrorCtx(ctx, "failed to cleanup replacement node after migration failure", destroyErr, slog.String("node_id", newNode.ID))
 				rotationErrors = append(rotationErrors, destroyErr)
 			}
 			continue
 		}
 
-		if err := s.provisioningOrchestrator.DestroyNode(ctx, nodeToRotate.NodeID); err != nil {
+		if err := s.provisioningService.DestroyNode(ctx, nodeToRotate.NodeID); err != nil {
 			s.logger.ErrorCtx(ctx, "failed to destroy old node after rotation", err, slog.String("node_id", nodeToRotate.NodeID))
 			rotationErrors = append(rotationErrors, err)
 		}
@@ -156,6 +158,16 @@ func (s *NodeRotationService) MigratePeersFromNode(ctx context.Context, sourceNo
 	return nil
 }
 
+// CleanupInactiveResources cleans up inactive peers and orphaned resources
+func (s *NodeRotationService) CleanupInactiveResources(ctx context.Context) error {
+	return s.resourceCleanupService.CleanupInactiveResources(ctx)
+}
+
+// CleanupInactiveResourcesWithOptions performs comprehensive cleanup with configurable options
+func (s *NodeRotationService) CleanupInactiveResourcesWithOptions(ctx context.Context, options CleanupOptions) error {
+	return s.resourceCleanupService.CleanupInactiveResourcesWithOptions(ctx, options)
+}
+
 // migrateSinglePeer migrates a single peer from source to target node
 func (s *NodeRotationService) migrateSinglePeer(ctx context.Context, sourcePeer *peer.Peer, sourceNodeID, targetNodeID string) error {
 	newIP, err := s.ipService.AllocateClientIP(ctx, targetNodeID)
@@ -173,7 +185,7 @@ func (s *NodeRotationService) migrateSinglePeer(ctx context.Context, sourcePeer 
 		return apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeNodeNotFound, "failed to get target node", false)
 	}
 
-	wgConfig := remote.PeerWireGuardConfig{
+	wgConfig := node.PeerWireGuardConfig{
 		PublicKey:    sourcePeer.PublicKey,
 		PresharedKey: sourcePeer.PresharedKey,
 		AllowedIPs:   []string{newIP.String() + "/32"},
@@ -229,7 +241,7 @@ func (s *NodeRotationService) makeRotationDecision(ctx context.Context) (*Rotati
 			peerCount = 0
 		}
 
-		if rotationInfo := s.analyzeNodeForRotation(activeNode.ID, health, int(peerCount)); rotationInfo != nil {
+		if rotationInfo := s.analyzeNodeForRotation(ctx, activeNode.ID, health, int(peerCount)); rotationInfo != nil {
 			nodesToRotate = append(nodesToRotate, *rotationInfo)
 			overallReason = append(overallReason, fmt.Sprintf("node %s: %s", activeNode.ID, rotationInfo.Reason))
 		}
@@ -257,7 +269,7 @@ func (s *NodeRotationService) makeRotationDecision(ctx context.Context) (*Rotati
 }
 
 // analyzeNodeForRotation analyzes a single node and determines if it needs rotation
-func (s *NodeRotationService) analyzeNodeForRotation(nodeID string, health *node.Health, peerCount int) *NodeRotationInfo {
+func (s *NodeRotationService) analyzeNodeForRotation(ctx context.Context, nodeID string, health *node.NodeHealthStatus, peerCount int) *NodeRotationInfo {
 	var reasons []string
 	priority := 4
 
@@ -331,7 +343,7 @@ func (s *NodeRotationService) createReplacementNode(ctx context.Context, nodeToR
 	}
 
 	s.logger.InfoContext(ctx, "using synchronous provisioning for replacement node")
-	newNode, err := s.provisioningOrchestrator.ProvisionNodeSync(ctx)
+	newNode, err := s.provisioningService.ProvisionNodeSync(ctx)
 	if err != nil {
 		return nil, apperrors.WrapWithDomain(err, apperrors.DomainProvisioning, apperrors.ErrCodeProvisionFailed, "failed to provision replacement node", true)
 	}
@@ -342,11 +354,11 @@ func (s *NodeRotationService) createReplacementNode(ctx context.Context, nodeToR
 
 // tryUseAsyncProvisionedNode attempts to wait for and use an asynchronously provisioned node
 func (s *NodeRotationService) tryUseAsyncProvisionedNode(ctx context.Context) *node.Node {
-	if !s.provisioningOrchestrator.IsProvisioning() {
+	if !s.provisioningService.IsProvisioning() {
 		return nil
 	}
 
-	waitTime := s.provisioningOrchestrator.GetEstimatedWaitTime()
+	waitTime := s.provisioningService.GetEstimatedWaitTime()
 	s.logger.InfoContext(ctx, "async provisioning in progress, waiting for completion", "estimated_wait", waitTime)
 
 	timeout := time.NewTimer(waitTime + time.Minute)
@@ -363,7 +375,7 @@ func (s *NodeRotationService) tryUseAsyncProvisionedNode(ctx context.Context) *n
 			s.logger.WarnContext(ctx, "timeout waiting for async provisioning, falling back to synchronous")
 			return nil
 		case <-ticker.C:
-			if s.provisioningOrchestrator.IsProvisioning() {
+			if s.provisioningService.IsProvisioning() {
 				continue
 			}
 			s.logger.InfoContext(ctx, "async provisioning completed, looking for new node")
@@ -428,13 +440,13 @@ func (s *NodeRotationService) migratePeersWithRollback(ctx context.Context, sour
 
 // shouldDeferRotation determines if rotation should be deferred due to active provisioning
 func (s *NodeRotationService) shouldDeferRotation(ctx context.Context) bool {
-	if !s.provisioningOrchestrator.IsProvisioning() {
+	if !s.provisioningService.IsProvisioning() {
 		return false
 	}
 
-	status := s.provisioningOrchestrator.GetCurrentStatus()
+	status := s.provisioningService.GetCurrentStatus()
 	if status.Progress < 0.8 {
-		waitTime := s.provisioningOrchestrator.GetEstimatedWaitTime()
+		waitTime := s.provisioningService.GetEstimatedWaitTime()
 		s.logger.InfoContext(ctx, "deferring rotation due to active provisioning in early stages", "progress", status.Progress, "estimated_wait", waitTime)
 		return true
 	}
@@ -444,9 +456,9 @@ func (s *NodeRotationService) shouldDeferRotation(ctx context.Context) bool {
 
 // logProvisioningStatusForRotation logs provisioning status for rotation decision making
 func (s *NodeRotationService) logProvisioningStatusForRotation(ctx context.Context) {
-	status := s.provisioningOrchestrator.GetCurrentStatus()
+	status := s.provisioningService.GetCurrentStatus()
 
-	if s.provisioningOrchestrator.IsProvisioning() {
+	if s.provisioningService.IsProvisioning() {
 		s.logger.InfoContext(ctx, "active provisioning detected during rotation cycle", "phase", status.Phase, "progress", status.Progress, "elapsed", time.Since(status.StartedAt))
 		if status.EstimatedETA != nil {
 			remainingTime := time.Until(*status.EstimatedETA)

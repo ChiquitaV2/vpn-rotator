@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 )
 
 // GetWireGuardStatus retrieves WireGuard interface status and configuration
-func (s *SSHNodeInteractor) uninstrumentedGetWireGuardStatus(ctx context.Context, nodeHost string) (*WireGuardStatus, error) {
+func (s *SSHNodeInteractor) uninstrumentedGetWireGuardStatus(ctx context.Context, nodeHost string) (*node.WireGuardStatus, error) {
 	op := s.logger.StartOp(ctx, "GetWireGuardStatus", slog.String("host", nodeHost))
 
 	result, err := s.executeCommandOnce(ctx, nodeHost, fmt.Sprintf("wg show %s", s.config.WireGuardInterface))
@@ -23,7 +24,7 @@ func (s *SSHNodeInteractor) uninstrumentedGetWireGuardStatus(ctx context.Context
 		return nil, err
 	}
 
-	status := &WireGuardStatus{
+	status := &node.WireGuardStatus{
 		InterfaceName: s.config.WireGuardInterface,
 		LastUpdated:   time.Now(),
 		IsRunning:     true,
@@ -47,7 +48,7 @@ func (s *SSHNodeInteractor) uninstrumentedGetWireGuardStatus(ctx context.Context
 }
 
 // AddPeer adds a WireGuard peer with proper validation and rollback on failure
-func (s *SSHNodeInteractor) uninstrumentedAddPeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedAddPeer(ctx context.Context, nodeHost string, config node.PeerWireGuardConfig) error {
 	op := s.logger.StartOp(ctx, "AddPeer", slog.String("host", nodeHost), slog.String("public_key", config.PublicKey[:8]+"..."))
 
 	if err := s.validatePeerConfig(config); err != nil {
@@ -162,7 +163,7 @@ func (s *SSHNodeInteractor) uninstrumentedRemovePeer(ctx context.Context, nodeHo
 }
 
 // UpdatePeer updates a peer's configuration by removing and re-adding it
-func (s *SSHNodeInteractor) uninstrumentedUpdatePeer(ctx context.Context, nodeHost string, config PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedUpdatePeer(ctx context.Context, nodeHost string, config node.PeerWireGuardConfig) error {
 	op := s.logger.StartOp(ctx, "UpdatePeer", slog.String("host", nodeHost), slog.String("public_key", config.PublicKey[:8]+"..."))
 
 	if err := s.validatePeerConfig(config); err != nil {
@@ -184,7 +185,7 @@ func (s *SSHNodeInteractor) uninstrumentedUpdatePeer(ctx context.Context, nodeHo
 }
 
 // ListPeers lists all peers with WireGuard dump parsing
-func (s *SSHNodeInteractor) uninstrumentedListPeers(ctx context.Context, nodeHost string) ([]*WireGuardPeerStatus, error) {
+func (s *SSHNodeInteractor) uninstrumentedListPeers(ctx context.Context, nodeHost string) ([]*node.WireGuardPeerStatus, error) {
 	result, err := s.executeCommandOnce(ctx, nodeHost, fmt.Sprintf("wg show %s dump", s.config.WireGuardInterface))
 	if err != nil {
 		return nil, errors.WrapWithDomain(err, errors.DomainInfrastructure, errors.ErrCodeSSHCommand, "failed to list peers", true)
@@ -199,7 +200,7 @@ func (s *SSHNodeInteractor) uninstrumentedListPeers(ctx context.Context, nodeHos
 }
 
 // SyncPeers synchronizes peers to match desired configuration state
-func (s *SSHNodeInteractor) uninstrumentedSyncPeers(ctx context.Context, nodeHost string, configs []PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedSyncPeers(ctx context.Context, nodeHost string, configs []node.PeerWireGuardConfig) error {
 	op := s.logger.StartOp(ctx, "SyncPeers", slog.String("host", nodeHost), slog.Int("desired_peer_count", len(configs)))
 
 	currentPeers, err := s.uninstrumentedListPeers(ctx, nodeHost)
@@ -210,12 +211,12 @@ func (s *SSHNodeInteractor) uninstrumentedSyncPeers(ctx context.Context, nodeHos
 	}
 	op.Progress("listed current peers", slog.Int("current_peer_count", len(currentPeers)))
 
-	currentPeerMap := make(map[string]*WireGuardPeerStatus)
+	currentPeerMap := make(map[string]*node.WireGuardPeerStatus)
 	for _, peer := range currentPeers {
 		currentPeerMap[peer.PublicKey] = peer
 	}
 
-	desiredPeerMap := make(map[string]PeerWireGuardConfig)
+	desiredPeerMap := make(map[string]node.PeerWireGuardConfig)
 	for _, config := range configs {
 		desiredPeerMap[config.PublicKey] = config
 	}
@@ -250,7 +251,7 @@ func (s *SSHNodeInteractor) uninstrumentedSyncPeers(ctx context.Context, nodeHos
 }
 
 // UpdateWireGuardConfig updates the complete WireGuard interface configuration
-func (s *SSHNodeInteractor) uninstrumentedUpdateWireGuardConfig(ctx context.Context, nodeHost string, config WireGuardConfig) error {
+func (s *SSHNodeInteractor) uninstrumentedUpdateWireGuardConfig(ctx context.Context, nodeHost string, config node.WireGuardConfig) error {
 	return errors.NewSystemError("not_implemented", "full configuration update not implemented yet", false, nil)
 }
 
@@ -328,7 +329,7 @@ func (s *SSHNodeInteractor) saveWireGuardConfigAlternative(ctx context.Context, 
 
 // Helper functions
 
-func (s *SSHNodeInteractor) buildAddPeerCommand(config PeerWireGuardConfig) string {
+func (s *SSHNodeInteractor) buildAddPeerCommand(config node.PeerWireGuardConfig) string {
 	cmd := fmt.Sprintf("wg set %s peer %s allowed-ips %s",
 		s.config.WireGuardInterface,
 		config.PublicKey,
@@ -349,7 +350,7 @@ func (s *SSHNodeInteractor) buildAddPeerCommand(config PeerWireGuardConfig) stri
 	return cmd
 }
 
-func (s *SSHNodeInteractor) validatePeerConfig(config PeerWireGuardConfig) error {
+func (s *SSHNodeInteractor) validatePeerConfig(config node.PeerWireGuardConfig) error {
 	if !crypto.IsValidWireGuardKey(config.PublicKey) {
 		return errors.NewPeerError(errors.ErrCodePeerValidation, "invalid WireGuard public key format", false, nil)
 	}
@@ -405,7 +406,7 @@ func (s *SSHNodeInteractor) validatePeerRemoval(ctx context.Context, nodeHost, p
 	return nil
 }
 
-func (s *SSHNodeInteractor) peerNeedsUpdate(current *WireGuardPeerStatus, desired PeerWireGuardConfig) bool {
+func (s *SSHNodeInteractor) peerNeedsUpdate(current *node.WireGuardPeerStatus, desired node.PeerWireGuardConfig) bool {
 	if len(current.AllowedIPs) != len(desired.AllowedIPs) {
 		return true
 	}
@@ -432,7 +433,7 @@ func (s *SSHNodeInteractor) peerNeedsUpdate(current *WireGuardPeerStatus, desire
 	return false
 }
 
-func (s *SSHNodeInteractor) parseWireGuardStatus(output string, status *WireGuardStatus) error {
+func (s *SSHNodeInteractor) parseWireGuardStatus(output string, status *node.WireGuardStatus) error {
 	lines := strings.Split(output, "\n")
 
 	for _, line := range lines {
@@ -458,8 +459,8 @@ func (s *SSHNodeInteractor) parseWireGuardStatus(output string, status *WireGuar
 	return nil
 }
 
-func (s *SSHNodeInteractor) parseWireGuardPeers(output string) ([]*WireGuardPeerStatus, error) {
-	var peers []*WireGuardPeerStatus
+func (s *SSHNodeInteractor) parseWireGuardPeers(output string) ([]*node.WireGuardPeerStatus, error) {
+	var peers []*node.WireGuardPeerStatus
 	lines := strings.Split(output, "\n")
 
 	for _, line := range lines {
@@ -473,7 +474,7 @@ func (s *SSHNodeInteractor) parseWireGuardPeers(output string) ([]*WireGuardPeer
 			continue
 		}
 
-		peer := &WireGuardPeerStatus{
+		peer := &node.WireGuardPeerStatus{
 			PublicKey: parts[0],
 		}
 

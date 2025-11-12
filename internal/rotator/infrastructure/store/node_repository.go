@@ -215,7 +215,7 @@ func (r *nodeRepository) UpdateStatus(ctx context.Context, nodeID string, status
 }
 
 // UpdateHealth updates node health information
-func (r *nodeRepository) UpdateHealth(ctx context.Context, nodeID string, health *node.Health) error {
+func (r *nodeRepository) UpdateHealth(ctx context.Context, nodeID string, health *node.NodeHealthStatus) error {
 	handshake := sql.NullTime{Time: health.LastChecked, Valid: true}
 	start := time.Now()
 	err := r.store.UpdateNodeActivity(ctx, db.UpdateNodeActivityParams{

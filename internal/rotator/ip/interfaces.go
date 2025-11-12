@@ -1,6 +1,27 @@
 package ip
 
-import "context"
+import (
+	"context"
+	"net"
+)
+
+// Service provides IP and subnet management operations
+type Service interface {
+	// Subnet operations - return types that consumers expect
+	AllocateNodeSubnet(ctx context.Context, nodeID string) (*net.IPNet, error)
+	ReleaseNodeSubnet(ctx context.Context, nodeID string) error
+	GetNodeSubnet(ctx context.Context, nodeID string) (*Subnet, error)
+
+	// IP operations - return types that consumers expect
+	AllocateClientIP(ctx context.Context, nodeID string) (net.IP, error)
+	ReleaseClientIP(ctx context.Context, nodeID string, ip net.IP) error
+	GetAllocatedIPs(ctx context.Context, nodeID string) ([]net.IP, error)
+	GetAvailableIPCount(ctx context.Context, nodeID string) (int, error)
+
+	// Validation and conflict checking
+	CheckIPConflict(ctx context.Context, ip string) (bool, error)
+	CheckPublicKeyConflict(ctx context.Context, publicKey string) (bool, error)
+}
 
 // SubnetRepository defines storage operations for subnet management
 type SubnetRepository interface {

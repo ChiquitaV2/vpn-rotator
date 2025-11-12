@@ -230,9 +230,15 @@ type Statistics struct {
 	AveragePeersPerNode float64 `json:"average_peers_per_node"`
 }
 
-// Health represents node health information
-type Health struct {
-	NodeID          string        `json:"node_id"`
+// Config represents node configuration for clients
+type Config struct {
+	ServerPublicKey string `json:"server_public_key"`
+	ServerIP        string `json:"server_ip"`
+	ServerPort      int    `json:"server_port"`
+}
+
+// NodeHealthStatus represents comprehensive node health information
+type NodeHealthStatus struct {
 	IsHealthy       bool          `json:"is_healthy"`
 	ResponseTime    time.Duration `json:"response_time"`
 	SystemLoad      float64       `json:"system_load"`
@@ -244,9 +250,60 @@ type Health struct {
 	Errors          []string      `json:"errors,omitempty"`
 }
 
-// Config represents node configuration for clients
-type Config struct {
-	ServerPublicKey string `json:"server_public_key"`
-	ServerIP        string `json:"server_ip"`
-	ServerPort      int    `json:"server_port"`
+// NodeSystemInfo represents detailed system information
+type NodeSystemInfo struct {
+	Hostname          string             `json:"hostname"`
+	OS                string             `json:"os"`
+	Kernel            string             `json:"kernel"`
+	Uptime            time.Duration      `json:"uptime"`
+	CPUCores          int                `json:"cpu_cores"`
+	TotalMemory       int64              `json:"total_memory"`
+	TotalDisk         int64              `json:"total_disk"`
+	NetworkInterfaces []NetworkInterface `json:"network_interfaces"`
+}
+
+// NetworkInterface represents a network interface
+type NetworkInterface struct {
+	Name      string `json:"name"`
+	IPAddress string `json:"ip_address"`
+	Status    string `json:"status"`
+}
+
+// WireGuardStatus represents WireGuard interface status
+type WireGuardStatus struct {
+	InterfaceName string    `json:"interface_name"`
+	PublicKey     string    `json:"public_key"`
+	ListenPort    int       `json:"listen_port"`
+	IsRunning     bool      `json:"is_running"`
+	PeerCount     int       `json:"peer_count"`
+	LastUpdated   time.Time `json:"last_updated"`
+}
+
+// WireGuardPeerStatus represents a WireGuard peer's status
+type WireGuardPeerStatus struct {
+	PublicKey           string     `json:"public_key"`
+	Endpoint            *string    `json:"endpoint,omitempty"`
+	AllowedIPs          []string   `json:"allowed_ips"`
+	LastHandshake       *time.Time `json:"last_handshake,omitempty"`
+	TransferRx          int64      `json:"transfer_rx"`
+	TransferTx          int64      `json:"transfer_tx"`
+	PersistentKeepalive int        `json:"persistent_keepalive"`
+}
+
+// PeerWireGuardConfig represents a peer's WireGuard configuration
+type PeerWireGuardConfig struct {
+	PublicKey    string   `json:"public_key"`
+	PresharedKey *string  `json:"preshared_key,omitempty"`
+	AllowedIPs   []string `json:"allowed_ips"`
+	Endpoint     *string  `json:"endpoint,omitempty"`
+}
+
+// WireGuardConfig represents complete WireGuard interface configuration
+type WireGuardConfig struct {
+	InterfaceName string                `json:"interface_name"`
+	PrivateKey    string                `json:"private_key"`
+	ListenPort    int                   `json:"listen_port"`
+	Address       []string              `json:"address"`
+	DNS           []string              `json:"dns,omitempty"`
+	Peers         []PeerWireGuardConfig `json:"peers"`
 }

@@ -11,34 +11,6 @@ import (
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
-// Service defines the business logic interface for peer operations
-// Contains only the methods actually used by consumers
-type Service interface {
-	// Core operations
-	Create(ctx context.Context, req *CreateRequest) (*Peer, error)
-	Get(ctx context.Context, peerID string) (*Peer, error)
-	GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error)
-	List(ctx context.Context, filters *Filters) ([]*Peer, error)
-	Remove(ctx context.Context, peerID string) error
-
-	// Status operations
-	UpdateStatus(ctx context.Context, peerID string, status Status) error
-
-	// Migration operations
-	Migrate(ctx context.Context, peerID, newNodeID, newIP string) error
-	GetByNode(ctx context.Context, nodeID string) ([]*Peer, error)
-	GetActiveByNode(ctx context.Context, nodeID string) ([]*Peer, error)
-
-	// Query operations
-	CountActiveByNode(ctx context.Context, nodeID string) (int64, error)
-	GetInactive(ctx context.Context, inactiveMinutes int) ([]*Peer, error)
-	GetStatistics(ctx context.Context) (*Statistics, error)
-
-	// Batch operations for better performance
-	CreateBatch(ctx context.Context, requests []*CreateRequest) ([]*Peer, error)
-	UpdateStatusBatch(ctx context.Context, updates map[string]Status) error
-}
-
 // service implements the Service interface
 type service struct {
 	repo   Repository
@@ -59,7 +31,7 @@ func (s *service) Create(ctx context.Context, req *CreateRequest) (*Peer, error)
 		slog.String("public_key", req.PublicKey))
 
 	// Validate request
-	if err := ValidateCreateRequest(req); err != nil {
+	if err := req.Validate(); err != nil {
 		op.Fail(err, "validation failed")
 		return nil, err
 	}
@@ -141,7 +113,8 @@ func (s *service) Get(ctx context.Context, peerID string) (*Peer, error) {
 func (s *service) GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error) {
 	op := s.logger.StartOp(ctx, "GetPeerByPublicKey", slog.String("public_key", publicKey))
 
-	if err := ValidatePublicKey(publicKey); err != nil {
+	if publicKey == "" {
+		err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "public_key cannot be empty", false, nil)
 		op.Fail(err, "validation failed")
 		return nil, err
 	}
@@ -220,11 +193,6 @@ func (s *service) UpdateStatus(ctx context.Context, peerID string, status Status
 		return err
 	}
 
-	if err := ValidateStatus(status); err != nil {
-		op.Fail(err, "validation failed")
-		return err
-	}
-
 	// Get current peer to validate transition
 	peer, err := s.repo.Get(ctx, peerID)
 	if err != nil {
@@ -233,9 +201,7 @@ func (s *service) UpdateStatus(ctx context.Context, peerID string, status Status
 	}
 
 	// Validate status transition
-	if !peer.Status.CanTransitionTo(status) {
-		err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation,
-			fmt.Sprintf("invalid status transition from %s to %s", peer.Status, status), false, nil)
+	if err := peer.UpdateStatus(status); err != nil {
 		op.Fail(err, "invalid status transition")
 		return err
 	}
@@ -262,12 +228,16 @@ func (s *service) Migrate(ctx context.Context, peerID, newNodeID, newIP string) 
 		op.Fail(err, "validation failed")
 		return err
 	}
-	if err := ValidateNodeID(newNodeID); err != nil {
-		op.Fail(err, "validation failed")
+
+	// Get peer to call domain logic
+	peer, err := s.repo.Get(ctx, peerID)
+	if err != nil {
+		op.Fail(err, "failed to get peer for migration")
 		return err
 	}
-	if err := ValidateIPAddress(newIP); err != nil {
-		op.Fail(err, "validation failed")
+
+	if err := peer.Migrate(newNodeID, newIP); err != nil {
+		op.Fail(err, "migration validation failed")
 		return err
 	}
 
@@ -304,7 +274,8 @@ func (s *service) Migrate(ctx context.Context, peerID, newNodeID, newIP string) 
 func (s *service) GetByNode(ctx context.Context, nodeID string) ([]*Peer, error) {
 	op := s.logger.StartOp(ctx, "GetByNode", slog.String("node_id", nodeID))
 
-	if err := ValidateNodeID(nodeID); err != nil {
+	if nodeID == "" {
+		err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "node_id cannot be empty", false, nil)
 		op.Fail(err, "validation failed")
 		return nil, err
 	}
@@ -324,7 +295,8 @@ func (s *service) GetByNode(ctx context.Context, nodeID string) ([]*Peer, error)
 func (s *service) GetActiveByNode(ctx context.Context, nodeID string) ([]*Peer, error) {
 	op := s.logger.StartOp(ctx, "GetActiveByNode", slog.String("node_id", nodeID))
 
-	if err := ValidateNodeID(nodeID); err != nil {
+	if nodeID == "" {
+		err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "node_id cannot be empty", false, nil)
 		op.Fail(err, "validation failed")
 		return nil, err
 	}
@@ -344,7 +316,8 @@ func (s *service) GetActiveByNode(ctx context.Context, nodeID string) ([]*Peer, 
 func (s *service) CountActiveByNode(ctx context.Context, nodeID string) (int64, error) {
 	op := s.logger.StartOp(ctx, "CountActiveByNode", slog.String("node_id", nodeID))
 
-	if err := ValidateNodeID(nodeID); err != nil {
+	if nodeID == "" {
+		err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "node_id cannot be empty", false, nil)
 		op.Fail(err, "validation failed")
 		return 0, err
 	}
@@ -409,7 +382,7 @@ func (s *service) CreateBatch(ctx context.Context, requests []*CreateRequest) ([
 
 	// Pre-validate all requests
 	for i, req := range requests {
-		if err := ValidateCreateRequest(req); err != nil {
+		if err := req.Validate(); err != nil {
 			if domainErr, ok := err.(apperrors.DomainError); ok {
 				err = domainErr.WithMetadata("batch_index", i)
 			} else {
@@ -453,7 +426,9 @@ func (s *service) UpdateStatusBatch(ctx context.Context, updates map[string]Stat
 			op.Fail(err, "validation failed")
 			return err
 		}
-		if err := ValidateStatus(status); err != nil {
+		if !status.IsValid() {
+			err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "invalid status", false, nil).
+				WithMetadata("status", status)
 			if domainErr, ok := err.(apperrors.DomainError); ok {
 				err = domainErr.WithMetadata("peer_id", peerID)
 			} else {

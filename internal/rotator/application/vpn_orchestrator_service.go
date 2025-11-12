@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
@@ -16,31 +13,31 @@ import (
 
 // VPNOrchestratorService orchestrates VPN operations by coordinating specialized services
 type VPNOrchestratorService struct {
-	peerConnectionService    *PeerConnectionService
-	nodeRotationService      *NodeRotationService
-	resourceCleanupService   *ResourceCleanupService
-	provisioningOrchestrator *ProvisioningOrchestrator
-	peerService              peer.Service
-	logger                   *applogger.Logger
+	peerConnectionService  *PeerConnectionService
+	nodeRotationService    *NodeRotationService
+	resourceCleanupService *ResourceCleanupService
+	provisioningService    *ProvisioningService
+	peerService            peer.Service
+	logger                 *applogger.Logger
 }
 
 // NewVPNOrchestratorService creates a new VPN orchestrator service with unified provisioning
 func NewVPNOrchestratorService(
-	nodeService node.NodeService,
+	peerConnectionService *PeerConnectionService,
+	nodeRotationService *NodeRotationService,
+	resourceCleanupService *ResourceCleanupService,
+	provisioningService *ProvisioningService,
 	peerService peer.Service,
-	ipService ip.Service,
-	nodeInteractor remote.NodeInteractor,
-	provisioningOrchestrator *ProvisioningOrchestrator,
 	logger *applogger.Logger,
 ) VPNService {
 	serviceLogger := logger.WithComponent("vpn.orchestrator")
 	return &VPNOrchestratorService{
-		peerConnectionService:    NewPeerConnectionService(nodeService, peerService, ipService, nodeInteractor, serviceLogger),
-		nodeRotationService:      NewNodeRotationService(nodeService, peerService, ipService, nodeInteractor, provisioningOrchestrator, serviceLogger),
-		resourceCleanupService:   NewResourceCleanupService(nodeService, peerService, ipService, serviceLogger),
-		provisioningOrchestrator: provisioningOrchestrator,
-		peerService:              peerService,
-		logger:                   serviceLogger,
+		peerConnectionService:  peerConnectionService,
+		nodeRotationService:    nodeRotationService,
+		resourceCleanupService: resourceCleanupService,
+		provisioningService:    provisioningService,
+		peerService:            peerService,
+		logger:                 serviceLogger,
 	}
 }
 
@@ -64,19 +61,19 @@ func (s *VPNOrchestratorService) ConnectPeer(ctx context.Context, req api.Connec
 func (s *VPNOrchestratorService) handleProvisioningRequired(ctx context.Context, provErr apperrors.DomainError) (*api.ConnectResponse, error) {
 	s.logger.InfoContext(ctx, "provisioning required for peer connection")
 
-	if s.provisioningOrchestrator == nil {
-		s.logger.InfoContext(ctx, "provisioning orchestrator not available, returning error")
+	if s.provisioningService == nil {
+		s.logger.InfoContext(ctx, "provisioning service not available, returning error")
 		return nil, provErr
 	}
 
-	if s.provisioningOrchestrator.IsProvisioning() {
-		status := s.provisioningOrchestrator.GetCurrentStatus()
-		estimatedWait := int(s.provisioningOrchestrator.GetEstimatedWaitTime().Seconds())
+	if s.provisioningService.IsProvisioning() {
+		status := s.provisioningService.GetCurrentStatus()
+		estimatedWait := int(s.provisioningService.GetEstimatedWaitTime().Seconds())
 		s.logger.InfoContext(ctx, "provisioning already in progress", "phase", status.Phase, "progress", status.Progress*100)
 		return nil, apperrors.NewSystemError(apperrors.ErrCodeNodeNotReady, fmt.Sprintf("Node provisioning in progress (phase: %s, progress: %.1f%%)", status.Phase, status.Progress*100), true, provErr).WithMetadata("estimated_wait_sec", estimatedWait).WithMetadata("retry_after_sec", estimatedWait/2)
 	}
 
-	if err := s.provisioningOrchestrator.ProvisionNodeAsync(ctx); err != nil {
+	if err := s.provisioningService.ProvisionNodeAsync(ctx); err != nil {
 		s.logger.ErrorCtx(ctx, "failed to trigger async provisioning", err)
 		return nil, provErr
 	}
@@ -99,22 +96,11 @@ func (s *VPNOrchestratorService) DisconnectPeer(ctx context.Context, peerID stri
 // GetPeerStatus retrieves the status of a specific peer
 func (s *VPNOrchestratorService) GetPeerStatus(ctx context.Context, peerID string) (*PeerStatus, error) {
 	op := s.logger.StartOp(ctx, "GetPeerStatus", slog.String("peer_id", peerID))
-	existingPeer, err := s.peerService.Get(ctx, peerID)
+	status, err := s.peerConnectionService.GetPeerStatus(ctx, peerID)
 	if err != nil {
 		op.Fail(err, "failed to get peer")
 		return nil, err
 	}
-
-	status := &PeerStatus{
-		PeerID:      existingPeer.ID,
-		PublicKey:   existingPeer.PublicKey,
-		AllocatedIP: existingPeer.AllocatedIP,
-		Status:      string(existingPeer.Status),
-		NodeID:      existingPeer.NodeID,
-		ConnectedAt: existingPeer.CreatedAt,
-		LastSeen:    existingPeer.UpdatedAt,
-	}
-
 	op.Complete("retrieved peer status")
 	return status, nil
 }
@@ -151,7 +137,7 @@ func (s *VPNOrchestratorService) ListActivePeers(ctx context.Context) ([]*api.Pe
 // RotateNodes performs node rotation by delegating to the node rotation service
 func (s *VPNOrchestratorService) RotateNodes(ctx context.Context) error {
 	op := s.logger.StartOp(ctx, "RotateNodes")
-	if s.provisioningOrchestrator != nil && s.provisioningOrchestrator.IsProvisioning() {
+	if s.provisioningService != nil && s.provisioningService.IsProvisioning() {
 		op.Complete("rotation deferred due to active provisioning")
 		return nil
 	}
