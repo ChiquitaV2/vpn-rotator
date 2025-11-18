@@ -30,9 +30,9 @@ func (s *Server) connectHandler() http.HandlerFunc {
 		}
 		op.Progress("request validated")
 
-		// Convert API -> service request and call orchestrator
+		// Convert API -> service request and call service directly
 		svcReq := ConvertToServiceConnectRequest(req)
-		svcResp, err := s.vpnService.ConnectPeer(ctx, svcReq)
+		svcResp, err := s.peerConnectionService.ConnectPeer(ctx, svcReq)
 		if err != nil {
 			op.Fail(err, "failed to connect peer")
 			WriteErrorResponse(w, r, err)
@@ -69,7 +69,7 @@ func (s *Server) disconnectHandler() http.HandlerFunc {
 		}
 		op.With("peer_id", req.PeerID)
 
-		err := s.vpnService.DisconnectPeer(ctx, req.PeerID)
+		err := s.peerConnectionService.DisconnectPeer(ctx, req.PeerID)
 		if err != nil {
 			op.Fail(err, "failed to disconnect peer")
 			WriteErrorResponse(w, r, err)
@@ -105,7 +105,7 @@ func (s *Server) listPeersHandler() http.HandlerFunc {
 
 		// Convert API -> service params
 		svcParams := ConvertToServicePeerListParams(params)
-		svcPeers, err := s.vpnService.ListPeers(ctx, svcParams)
+		svcPeers, err := s.peerConnectionService.ListPeers(ctx, svcParams)
 		if err != nil {
 			op.Fail(err, "failed to list active peers")
 			WriteErrorResponse(w, r, err)
@@ -136,7 +136,7 @@ func (s *Server) getPeerHandler() http.HandlerFunc {
 			return
 		}
 
-		svcStatus, err := s.vpnService.GetPeerStatus(ctx, peerID)
+		svcStatus, err := s.peerConnectionService.GetPeerStatus(ctx, peerID)
 		if err != nil {
 			op.Fail(err, "failed to get peer status")
 			WriteErrorResponse(w, r, err)

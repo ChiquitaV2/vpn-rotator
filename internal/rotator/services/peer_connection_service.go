@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -19,6 +20,7 @@ type PeerConnectionService struct {
 	peerService      peer.Service
 	ipService        ip.Service
 	wireguardManager node.WireGuardManager
+	eventPublisher   *events.EventPublisher
 	logger           *applogger.Logger
 }
 
@@ -28,6 +30,7 @@ func NewPeerConnectionService(
 	peerService peer.Service,
 	ipService ip.Service,
 	wireguardManager node.WireGuardManager,
+	eventPublisher *events.EventPublisher,
 	logger *applogger.Logger,
 ) *PeerConnectionService {
 	return &PeerConnectionService{
@@ -35,6 +38,7 @@ func NewPeerConnectionService(
 		peerService:      peerService,
 		ipService:        ipService,
 		wireguardManager: wireguardManager,
+		eventPublisher:   eventPublisher,
 		logger:           logger.WithComponent("peerconnect.service"),
 	}
 }
@@ -282,7 +286,7 @@ func (s *PeerConnectionService) GetPeerStatus(ctx context.Context, peerID string
 	return status, nil
 }
 
-// selectNode selects an optimal node or returns error if none are available
+// selectNode selects an optimal node or publishes provisioning event if none available
 func (s *PeerConnectionService) selectNode(ctx context.Context) (*node.Node, error) {
 	activeStatus := node.StatusActive
 	selectedNode, err := s.nodeService.SelectOptimalNode(ctx, node.Filters{Status: &activeStatus})
@@ -291,8 +295,16 @@ func (s *PeerConnectionService) selectNode(ctx context.Context) (*node.Node, err
 	}
 
 	if apperrors.IsErrorCode(err, apperrors.ErrCodeNodeNotFound) || apperrors.IsErrorCode(err, apperrors.ErrCodeNodeAtCapacity) {
-		s.logger.InfoContext(ctx, "no active nodes available, provisioning required")
-		return nil, apperrors.NewSystemError(apperrors.ErrCodeNodeNotReady, "No active nodes available, provisioning required. Please try again.", true, err).WithMetadata("estimated_wait_sec", 180).WithMetadata("retry_after_sec", 90)
+		s.logger.InfoContext(ctx, "no active nodes available, requesting provisioning")
+
+		// Publish event requesting node provisioning
+		if s.eventPublisher != nil {
+			_ = s.eventPublisher.Provisioning.PublishProvisionRequested(ctx, "peer-connect", "no_capacity")
+		}
+
+		return nil, apperrors.NewSystemError(apperrors.ErrCodeNodeNotReady, "No active nodes available, provisioning requested. Please try again in a few minutes.", true, err).
+			WithMetadata("estimated_wait_sec", 180).
+			WithMetadata("retry_after_sec", 90)
 	}
 
 	return nil, apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeInternal, "failed to select node", false)

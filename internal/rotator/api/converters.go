@@ -30,21 +30,21 @@ func ConvertToAPIConnectResponse(in *services.ConnectResponse) *pkgapi.ConnectRe
 	}
 }
 
-// ConvertToAPIPeerStatus maps service-layer PeerStatus to API-layer PeerStatusResponse.
-func ConvertToAPIPeerStatus(in *services.PeerStatus) *pkgapi.PeerStatusResponse {
+// ConvertToAPIPeerStatus maps service-layer PeerStatus to API-layer Peer.
+func ConvertToAPIPeerStatus(in *services.PeerStatus) *pkgapi.Peer {
 	if in == nil {
 		return nil
 	}
-	return &pkgapi.PeerStatusResponse{
-		PeerID:       in.PeerID,
-		PublicKey:    in.PublicKey,
-		AllocatedIP:  in.AllocatedIP,
-		Status:       in.Status,
-		NodeID:       in.NodeID,
-		ServerIP:     in.ServerIP,
-		ServerStatus: in.ServerStatus,
-		ConnectedAt:  in.ConnectedAt,
-		LastSeen:     in.LastSeen,
+	return &pkgapi.Peer{
+		ID:              in.PeerID,
+		PublicKey:       in.PublicKey,
+		AllocatedIP:     in.AllocatedIP,
+		Status:          in.Status,
+		NodeID:          in.NodeID,
+		ServerIP:        in.ServerIP,
+		ServerStatus:    in.ServerStatus,
+		CreatedAt:       in.ConnectedAt,
+		LastHandshakeAt: nil, // PeerStatus doesn't have handshake info
 	}
 }
 
@@ -58,19 +58,19 @@ func ConvertToServicePeerListParams(in pkgapi.PeerListParams) services.PeerListP
 	}
 }
 
-// ConvertToAPIPeersListResponse maps service-layer PeersListResponse to API-layer PeersListResponse.
-func ConvertToAPIPeersListResponse(in *services.PeersListResponse) *pkgapi.PeersListResponse {
+// ConvertToAPIPeersListResponse maps service-layer PeersListResponse to API-layer PeersList.
+func ConvertToAPIPeersListResponse(in *services.PeersListResponse) *pkgapi.PeersList {
 	if in == nil {
 		return nil
 	}
-	out := &pkgapi.PeersListResponse{
-		Peers:      make([]pkgapi.PeerInfo, 0, len(in.Peers)),
+	out := &pkgapi.PeersList{
+		Peers:      make([]pkgapi.Peer, 0, len(in.Peers)),
 		TotalCount: in.TotalCount,
 		Offset:     in.Offset,
 		Limit:      in.Limit,
 	}
 	for _, p := range in.Peers {
-		out.Peers = append(out.Peers, pkgapi.PeerInfo{
+		out.Peers = append(out.Peers, pkgapi.Peer{
 			ID:              p.ID,
 			NodeID:          p.NodeID,
 			PublicKey:       p.PublicKey,
@@ -81,25 +81,4 @@ func ConvertToAPIPeersListResponse(in *services.PeersListResponse) *pkgapi.Peers
 		})
 	}
 	return out
-}
-
-// toAPIHealthResponse converts a services.HealthResponse into the API response type.
-func toAPIHealthResponse(in *services.HealthResponse) *pkgapi.HealthResponse {
-	if in == nil {
-		return &pkgapi.HealthResponse{Status: "unknown"}
-	}
-	var prov *pkgapi.ProvisioningInfo
-	if in.Provisioning != nil {
-		prov = &pkgapi.ProvisioningInfo{
-			IsActive:     in.Provisioning.IsActive,
-			Phase:        in.Provisioning.Phase,
-			Progress:     in.Provisioning.Progress,
-			EstimatedETA: in.Provisioning.EstimatedETA,
-		}
-	}
-	return &pkgapi.HealthResponse{
-		Status:       in.Status,
-		Version:      in.Version,
-		Provisioning: prov,
-	}
 }

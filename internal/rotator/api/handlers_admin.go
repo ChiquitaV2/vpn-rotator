@@ -2,12 +2,11 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
 )
-
-// --- Admin handlers ---
 
 // systemStatusHandler returns overall system status via AdminOrchestrator
 func (s *Server) systemStatusHandler() http.HandlerFunc {
@@ -26,15 +25,6 @@ func (s *Server) systemStatusHandler() http.HandlerFunc {
 		op.Complete("retrieved system status")
 	}
 }
-
-// New-style route names used by server.go
-func (s *Server) adminStatusHandler() http.HandlerFunc         { return s.systemStatusHandler() }
-func (s *Server) adminNodeStatsHandler() http.HandlerFunc      { return s.nodeStatsHandler() }
-func (s *Server) adminPeerStatsHandler() http.HandlerFunc      { return s.peerStatsHandler() }
-func (s *Server) adminForceRotationHandler() http.HandlerFunc  { return s.forceRotationHandler() }
-func (s *Server) adminRotationStatusHandler() http.HandlerFunc { return s.rotationStatusHandler() }
-func (s *Server) adminManualCleanupHandler() http.HandlerFunc  { return s.manualCleanupHandler() }
-func (s *Server) adminSystemHealthHandler() http.HandlerFunc   { return s.systemHealthHandler() }
 
 // nodeStatsHandler returns node statistics via AdminOrchestrator
 func (s *Server) nodeStatsHandler() http.HandlerFunc {
@@ -72,11 +62,11 @@ func (s *Server) peerStatsHandler() http.HandlerFunc {
 	}
 }
 
-// forceRotationHandler triggers manual rotation via AdminOrchestrator
+// forceRotationHandler triggers manual rotation via NodeOrchestrator
 func (s *Server) forceRotationHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		op := GetLogger(r.Context()).StartOp(r.Context(), "forceRotationHandler")
-		if err := s.adminOrchestrator.ForceNodeRotation(r.Context()); err != nil {
+		if err := s.nodeOrchestrator.ForceRotation(r.Context()); err != nil {
 			op.Fail(err, "failed to force node rotation")
 			WriteErrorResponse(w, r, err)
 			return
@@ -90,17 +80,28 @@ func (s *Server) forceRotationHandler() http.HandlerFunc {
 	}
 }
 
-// rotationStatusHandler returns rotation status via AdminOrchestrator
+// rotationStatusHandler returns rotation status via NodeOrchestrator
 func (s *Server) rotationStatusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		op := GetLogger(r.Context()).StartOp(r.Context(), "rotationStatusHandler")
-		status, err := s.adminOrchestrator.GetRotationStatus(r.Context())
+		status, err := s.nodeOrchestrator.GetRotationStatus(r.Context())
 		if err != nil {
 			op.Fail(err, "failed to get rotation status")
 			WriteErrorResponse(w, r, err)
 			return
 		}
-		if err := WriteSuccess(w, status); err != nil {
+
+		// Convert to API response
+		apiStatus := api.RotationStatus{
+			InProgress:        status.InProgress,
+			LastRotation:      status.LastRotation,
+			NodesRotated:      status.NodesRotated,
+			PeersMigrated:     status.PeersMigrated,
+			RotationReason:    status.RotationReason,
+			EstimatedComplete: status.EstimatedComplete,
+		}
+
+		if err := WriteSuccess(w, apiStatus); err != nil {
 			op.Fail(err, "failed to write response")
 			return
 		}
@@ -108,7 +109,7 @@ func (s *Server) rotationStatusHandler() http.HandlerFunc {
 	}
 }
 
-// manualCleanupHandler performs manual cleanup via AdminOrchestrator
+// manualCleanupHandler performs manual cleanup via ResourceCleanupService
 func (s *Server) manualCleanupHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		op := GetLogger(r.Context()).StartOp(r.Context(), "manualCleanupHandler")
@@ -118,12 +119,17 @@ func (s *Server) manualCleanupHandler() http.HandlerFunc {
 			WriteErrorResponse(w, r, err)
 			return
 		}
-		result, err := s.adminOrchestrator.ManualCleanup(r.Context(), options)
-		if err != nil {
+		if err := s.resourceCleanupService.CleanupInactiveResourcesWithOptions(r.Context(), options); err != nil {
 			op.Fail(err, "failed to run manual cleanup")
 			WriteErrorResponse(w, r, err)
 			return
 		}
+
+		result := api.CleanupResult{
+			Timestamp: time.Now(),
+			Duration:  time.Since(op.StartTime).Milliseconds(),
+		}
+
 		if err := WriteSuccess(w, result); err != nil {
 			op.Fail(err, "failed to write response")
 			return
@@ -154,23 +160,31 @@ func (s *Server) provisioningStatusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		op := GetLogger(r.Context()).StartOp(r.Context(), "provisioningStatusHandler")
 
-		if !s.vpnService.IsProvisioning() {
-			err := WriteJSON(w, http.StatusServiceUnavailable, api.ProvisioningInfo{IsActive: false})
-			if err != nil {
-				op.Fail(err, "failed to write response")
-			}
-			op.Complete("provisioning not active")
-			return
-		}
-
-		status, err := s.vpnService.GetProvisioningStatus(r.Context())
+		status, err := s.nodeOrchestrator.GetProvisioningStatus(r.Context())
 		if err != nil {
 			op.Fail(err, "failed to get provisioning status")
 			WriteErrorResponse(w, r, err)
 			return
 		}
 
-		if err := WriteSuccess(w, status); err != nil {
+		// Return empty provisioning info if not active
+		if status == nil {
+			if err := WriteSuccess(w, api.ProvisioningInfo{IsActive: false}); err != nil {
+				op.Fail(err, "failed to write response")
+			}
+			op.Complete("provisioning not active")
+			return
+		}
+
+		// Convert and return active status
+		response := api.ProvisioningInfo{
+			IsActive:     status.IsActive,
+			Phase:        status.Phase,
+			Progress:     status.Progress,
+			EstimatedETA: status.EstimatedETA,
+		}
+
+		if err := WriteSuccess(w, response); err != nil {
 			op.Fail(err, "failed to write response")
 			return
 		}

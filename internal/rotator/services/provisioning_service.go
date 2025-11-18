@@ -207,6 +207,11 @@ func (s *ProvisioningService) GetProgress() float64 {
 	return s.stateTracker.GetProgress()
 }
 
+// GetNodeStateTracker returns the state tracker for external queries
+func (s *ProvisioningService) GetNodeStateTracker() *events.NodeStateTracker {
+	return s.stateTracker
+}
+
 // Helper Methods
 
 func (s *ProvisioningService) updateHistoricalDuration(phase string, duration time.Duration) {

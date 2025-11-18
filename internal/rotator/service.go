@@ -105,14 +105,14 @@ func (s *Service) initializeComponents() error {
 func (s *Service) initializeScheduler() error {
 	s.logger.Debug("initializing scheduler with application services")
 
-	// Create unified scheduler that uses VPN service for rotation and cleanup
+	// Create unified scheduler that uses SchedulerAdapter for rotation and cleanup
 	// Use internal defaults for scheduler configuration
 	schedulerDefaults := config.NewInternalDefaults().SchedulerDefaults()
 	schedulerManager := scheduler.NewUnifiedManager(
 		s.config.Rotation.Interval,             // User-configurable rotation interval
 		schedulerDefaults.CleanupCheckInterval, // Internal default cleanup check interval
 		s.config.Rotation.CleanupAge,           // User-configurable cleanup age
-		s.components.VPNOrchestrator, s.logger,
+		s.components.SchedulerAdapter, s.logger,
 	)
 
 	s.scheduler = schedulerManager
@@ -122,17 +122,18 @@ func (s *Service) initializeScheduler() error {
 
 // initializeAPIServer creates the API server using application services
 func (s *Service) initializeAPIServer() error {
-	s.logger.Debug("initializing API server with orchestrator service")
+	s.logger.Debug("initializing API server with services")
 
-	// Create API server that uses orchestrator service
+	// Create API server - uses services directly where they're simple pass-throughs
 	apiServer := api.NewServer(
 		api.ServerConfig{
 			Address:     s.config.API.ListenAddr,
 			CORSOrigins: []string{"*"}, // TODO: Make configurable
 		},
-		s.components.VPNOrchestrator,
+		s.components.PeerConnectionSvr,
+		s.components.NodeOrchestrator,
+		s.components.ResourceCleanupService,
 		s.components.AdminOrchestrator,
-		s.components.HealthService,
 		s.logger,
 	)
 

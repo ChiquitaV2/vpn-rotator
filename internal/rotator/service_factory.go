@@ -61,8 +61,10 @@ type ServiceComponents struct {
 	ProvisioningService    *services.ProvisioningService
 	NodeRotatorService     *services.NodeRotationService
 	ResourceCleanupService *services.ResourceCleanupService
-	VPNOrchestrator        orchestrator.VPNService
-	HealthService          services.HealthService
+
+	// Orchestrators
+	NodeOrchestrator orchestrator.NodeOrchestrator
+	SchedulerAdapter *orchestrator.SchedulerVPNService
 
 	// Repositories
 	NodeRepository   node.NodeRepository
@@ -324,6 +326,7 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		c.PeerService,
 		c.IPService,
 		c.NodeInteractor,
+		c.EventPublisher,
 		f.logger,
 	)
 	f.logger.DebugContext(ctx, "peer connection service created successfully")
@@ -343,8 +346,8 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		c.PeerService,
 		c.IPService,
 		c.NodeInteractor,
-		c.ProvisioningService,
 		c.ResourceCleanupService,
+		c.EventPublisher,
 		f.logger,
 	)
 	f.logger.DebugContext(ctx, "node rotation service created successfully")
@@ -354,27 +357,26 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		c.NodeService,
 		c.PeerService,
 		c.IPService,
-		c.ResourceCleanupService,
-		c.NodeRotatorService,
-		c.ProvisioningService,
+		c.ProvisioningService.GetNodeStateTracker(),
 		f.logger,
 	)
 	f.logger.DebugContext(ctx, "admin orchestrator created successfully")
 
-	// Create health service
-	c.HealthService = services.NewHealthService(c.ProvisioningService)
-	f.logger.DebugContext(ctx, "health service created successfully")
-
-	// Create VPN orchestrator service (slimmed – admin & health handled separately)
-	c.VPNOrchestrator = orchestrator.NewVPNService(
-		c.PeerConnectionSvr,
+	// Create node orchestrator (only one that adds value beyond simple delegation)
+	c.NodeOrchestrator = orchestrator.NewNodeOrchestrator(
 		c.NodeRotatorService,
-		c.ResourceCleanupService,
-		c.ProvisioningService,
-		c.PeerService,
+		c.NodeService,
+		c.ProvisioningService.GetNodeStateTracker(),
 		f.logger,
 	)
-	f.logger.DebugContext(ctx, "VPN orchestrator service created successfully")
+	f.logger.DebugContext(ctx, "node orchestrator created successfully")
+
+	// Create scheduler adapter
+	c.SchedulerAdapter = orchestrator.NewSchedulerVPNService(
+		c.NodeOrchestrator,
+		c.ResourceCleanupService,
+	)
+	f.logger.DebugContext(ctx, "scheduler adapter created successfully")
 
 	op.Complete("application services initialized successfully")
 	return nil

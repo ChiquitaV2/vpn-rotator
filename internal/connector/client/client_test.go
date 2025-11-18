@@ -25,9 +25,9 @@ func TestClient_GetPeerStatus(t *testing.T) {
 				t.Errorf("expected method GET, got %s", r.Method)
 			}
 
-			resp := api.Response[api.PeerInfo]{
+			resp := api.Response[api.Peer]{
 				Success: true,
-				Data: api.PeerInfo{
+				Data: api.Peer{
 					ID:     "peer-123",
 					Status: "connected",
 					NodeID: "node-456",

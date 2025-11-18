@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -21,19 +22,19 @@ type NodeRotationService struct {
 	peerService            peer.Service
 	ipService              ip.Service
 	wireguardManager       node.WireGuardManager
-	provisioningService    *ProvisioningService
 	resourceCleanupService *ResourceCleanupService
+	eventPublisher         *events.EventPublisher
 	logger                 *applogger.Logger
 }
 
-// NewNodeRotationService creates a new node rotation service with unified provisioning
+// NewNodeRotationService creates a new node rotation service
 func NewNodeRotationService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
 	wireguardManager node.WireGuardManager,
-	provisioningService *ProvisioningService,
 	resourceCleanupService *ResourceCleanupService,
+	eventPublisher *events.EventPublisher,
 	logger *applogger.Logger,
 ) *NodeRotationService {
 	return &NodeRotationService{
@@ -41,8 +42,8 @@ func NewNodeRotationService(
 		peerService:            peerService,
 		ipService:              ipService,
 		wireguardManager:       wireguardManager,
-		provisioningService:    provisioningService,
 		resourceCleanupService: resourceCleanupService,
+		eventPublisher:         eventPublisher,
 		logger:                 logger.WithComponent("rotation.service"),
 	}
 }
@@ -90,14 +91,14 @@ func (s *NodeRotationService) RotateNodes(ctx context.Context) error {
 			s.logger.ErrorCtx(ctx, "failed to migrate peers during rotation", err, slog.String("source_node_id", nodeToRotate.NodeID), slog.String("target_node_id", newNode.ID))
 			rotationErrors = append(rotationErrors, err)
 
-			if destroyErr := s.provisioningService.DestroyNode(ctx, newNode.ID); destroyErr != nil {
+			if destroyErr := s.nodeService.DestroyNode(ctx, newNode.ID); destroyErr != nil {
 				s.logger.ErrorCtx(ctx, "failed to cleanup replacement node after migration failure", destroyErr, slog.String("node_id", newNode.ID))
 				rotationErrors = append(rotationErrors, destroyErr)
 			}
 			continue
 		}
 
-		if err := s.provisioningService.DestroyNode(ctx, nodeToRotate.NodeID); err != nil {
+		if err := s.nodeService.DestroyNode(ctx, nodeToRotate.NodeID); err != nil {
 			s.logger.ErrorCtx(ctx, "failed to destroy old node after rotation", err, slog.String("node_id", nodeToRotate.NodeID))
 			rotationErrors = append(rotationErrors, err)
 		}
@@ -333,78 +334,24 @@ func (s *NodeRotationService) analyzeNodeForRotation(ctx context.Context, nodeID
 	}
 }
 
-// createReplacementNode creates a new node to replace the one being rotated
+// createReplacementNode requests provisioning via event and waits for result
 func (s *NodeRotationService) createReplacementNode(ctx context.Context, nodeToRotate NodeRotationInfo) (*node.Node, error) {
 	s.logger.InfoContext(ctx, "creating replacement node", "for_node", nodeToRotate.NodeID, "reason", nodeToRotate.Reason)
 
-	if newNode := s.tryUseAsyncProvisionedNode(ctx); newNode != nil {
-		s.logger.InfoContext(ctx, "using node from async provisioning", "node_id", newNode.ID)
-		return newNode, nil
+	// Publish provisioning request
+	if s.eventPublisher != nil {
+		requestID := fmt.Sprintf("rotation-%s", nodeToRotate.NodeID)
+		_ = s.eventPublisher.Provisioning.PublishProvisionRequested(ctx, requestID, "rotation")
 	}
 
-	s.logger.InfoContext(ctx, "using synchronous provisioning for replacement node")
-	newNode, err := s.provisioningService.ProvisionNodeSync(ctx)
-	if err != nil {
-		return nil, apperrors.WrapWithDomain(err, apperrors.DomainProvisioning, apperrors.ErrCodeProvisionFailed, "failed to provision replacement node", true)
-	}
-
-	s.logger.InfoContext(ctx, "replacement node provisioned successfully", "new_node_id", newNode.ID)
-	return newNode, nil
-}
-
-// tryUseAsyncProvisionedNode attempts to wait for and use an asynchronously provisioned node
-func (s *NodeRotationService) tryUseAsyncProvisionedNode(ctx context.Context) *node.Node {
-	if !s.provisioningService.IsProvisioning() {
-		return nil
-	}
-
-	waitTime := s.provisioningService.GetEstimatedWaitTime()
-	s.logger.InfoContext(ctx, "async provisioning in progress, waiting for completion", "estimated_wait", waitTime)
-
-	timeout := time.NewTimer(waitTime + time.Minute)
-	ticker := time.NewTicker(10 * time.Second)
-	defer timeout.Stop()
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			s.logger.WarnContext(ctx, "context cancelled while waiting for async provisioning")
-			return nil
-		case <-timeout.C:
-			s.logger.WarnContext(ctx, "timeout waiting for async provisioning, falling back to synchronous")
-			return nil
-		case <-ticker.C:
-			if s.provisioningService.IsProvisioning() {
-				continue
-			}
-			s.logger.InfoContext(ctx, "async provisioning completed, looking for new node")
-			return s.findNewestActiveNode(ctx)
-		}
-	}
-}
-
-// findNewestActiveNode finds the most recently created active node
-func (s *NodeRotationService) findNewestActiveNode(ctx context.Context) *node.Node {
-	activeStatus := node.StatusActive
-	activeNodes, err := s.nodeService.ListNodes(ctx, node.Filters{Status: &activeStatus})
-	if err != nil {
-		s.logger.WarnContext(ctx, "failed to list active nodes after async provisioning", "error", err.Error())
-		return nil
-	}
-
-	if len(activeNodes) == 0 {
-		s.logger.WarnContext(ctx, "no active nodes found after async provisioning")
-		return nil
-	}
-
-	var newestNode *node.Node
-	for _, activeNode := range activeNodes {
-		if newestNode == nil || activeNode.CreatedAt.After(newestNode.CreatedAt) {
-			newestNode = activeNode
-		}
-	}
-	return newestNode
+	// For now, return error indicating async provisioning needed
+	// In a real event-driven system, rotation would be triggered by provisioning completion event
+	return nil, apperrors.NewSystemError(
+		apperrors.ErrCodeProvisionInProgress,
+		"provisioning requested via event bus, rotation will continue asynchronously",
+		false,
+		nil,
+	)
 }
 
 // migratePeersWithRollback migrates peers with proper error handling and rollback capability
@@ -438,33 +385,14 @@ func (s *NodeRotationService) migratePeersWithRollback(ctx context.Context, sour
 	return successCount, nil
 }
 
-// shouldDeferRotation determines if rotation should be deferred due to active provisioning
+// shouldDeferRotation checks if rotation should be deferred
 func (s *NodeRotationService) shouldDeferRotation(ctx context.Context) bool {
-	if !s.provisioningService.IsProvisioning() {
-		return false
-	}
-
-	status := s.provisioningService.GetCurrentStatus()
-	if status.Progress < 0.8 {
-		waitTime := s.provisioningService.GetEstimatedWaitTime()
-		s.logger.InfoContext(ctx, "deferring rotation due to active provisioning in early stages", "progress", status.Progress, "estimated_wait", waitTime)
-		return true
-	}
-
+	// Event-driven: rotation is no longer blocked by provisioning state
+	// Provisioning happens asynchronously via events
 	return false
 }
 
-// logProvisioningStatusForRotation logs provisioning status for rotation decision making
+// logProvisioningStatusForRotation logs rotation context
 func (s *NodeRotationService) logProvisioningStatusForRotation(ctx context.Context) {
-	status := s.provisioningService.GetCurrentStatus()
-
-	if s.provisioningService.IsProvisioning() {
-		s.logger.InfoContext(ctx, "active provisioning detected during rotation cycle", "phase", status.Phase, "progress", status.Progress, "elapsed", time.Since(status.StartedAt))
-		if status.EstimatedETA != nil {
-			remainingTime := time.Until(*status.EstimatedETA)
-			s.logger.InfoContext(ctx, "provisioning timing for rotation scheduling", "estimated_remaining", remainingTime)
-		}
-	} else {
-		s.logger.DebugContext(ctx, "no active provisioning detected")
-	}
+	s.logger.DebugContext(ctx, "starting rotation cycle")
 }

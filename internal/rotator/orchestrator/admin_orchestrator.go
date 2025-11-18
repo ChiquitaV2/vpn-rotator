@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	pkgapi "github.com/chiquitav2/vpn-rotator/pkg/api"
@@ -19,32 +19,24 @@ import (
 // It coordinates various services to provide system monitoring, statistics, and administrative controls.
 type AdminOrchestrator interface {
 	// System status and monitoring
-	GetSystemStatus(ctx context.Context) (*pkgapi.SystemStatusResponse, error)
-	GetNodeStatistics(ctx context.Context) (*pkgapi.NodeStatisticsResponse, error)
+	GetSystemStatus(ctx context.Context) (*pkgapi.SystemStatus, error)
+	GetNodeStatistics(ctx context.Context) (*pkgapi.NodeStatistics, error)
 	GetPeerStatistics(ctx context.Context) (*pkgapi.PeerStatsResponse, error)
 
-	// Administrative operations
-	ForceNodeRotation(ctx context.Context) error
-	ManualCleanup(ctx context.Context, options services.CleanupOptions) (*pkgapi.CleanupResultResponse, error)
+	// System health monitoring
+	ValidateSystemHealth(ctx context.Context) (*pkgapi.HealthReport, error)
 
-	// Rotation and health monitoring
-	GetRotationStatus(ctx context.Context) (*pkgapi.RotationStatusResponse, error)
-	ValidateSystemHealth(ctx context.Context) (*pkgapi.HealthReportResponse, error)
-
-	// Resource management
-	GetOrphanedResourcesReport(ctx context.Context) (*pkgapi.OrphanedResourcesReportResponse, error)
-	GetCapacityReport(ctx context.Context) (*pkgapi.CapacityReportResponse, error)
+	// Capacity management
+	GetCapacityReport(ctx context.Context) (*pkgapi.CapacityReport, error)
 }
 
 // adminOrchestrator implements AdminOrchestrator by coordinating domain and application services.
 type adminOrchestrator struct {
-	nodeService            node.NodeService
-	peerService            peer.Service
-	ipService              ip.Service
-	resourceCleanupService *services.ResourceCleanupService
-	nodeRotationService    *services.NodeRotationService
-	provisioningService    *services.ProvisioningService // Renamed from 'provisioner'
-	logger                 *applogger.Logger
+	nodeService      node.NodeService
+	peerService      peer.Service
+	ipService        ip.Service
+	nodeStateTracker *events.NodeStateTracker
+	logger           *applogger.Logger
 }
 
 // NewAdminOrchestrator creates a new admin orchestrator instance.
@@ -52,24 +44,20 @@ func NewAdminOrchestrator(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	resourceCleanupService *services.ResourceCleanupService,
-	nodeRotationService *services.NodeRotationService,
-	provisioningService *services.ProvisioningService, // Renamed from 'provisioner'
+	nodeStateTracker *events.NodeStateTracker,
 	logger *applogger.Logger,
 ) AdminOrchestrator {
 	return &adminOrchestrator{
-		nodeService:            nodeService,
-		peerService:            peerService,
-		ipService:              ipService,
-		resourceCleanupService: resourceCleanupService,
-		nodeRotationService:    nodeRotationService,
-		provisioningService:    provisioningService, // Renamed from 'provisioner'
-		logger:                 logger.WithComponent("admin.orchestrator"),
+		nodeService:      nodeService,
+		peerService:      peerService,
+		ipService:        ipService,
+		nodeStateTracker: nodeStateTracker,
+		logger:           logger.WithComponent("admin.orchestrator"),
 	}
 }
 
 // GetSystemStatus retrieves comprehensive system status by coordinating all domain services
-func (s *adminOrchestrator) GetSystemStatus(ctx context.Context) (*pkgapi.SystemStatusResponse, error) {
+func (s *adminOrchestrator) GetSystemStatus(ctx context.Context) (*pkgapi.SystemStatus, error) {
 	op := s.logger.StartOp(ctx, "GetSystemStatus")
 
 	nodeStats, err := s.nodeService.GetNodeStatistics(ctx)
@@ -95,7 +83,7 @@ func (s *adminOrchestrator) GetSystemStatus(ctx context.Context) (*pkgapi.System
 	}
 
 	nodeDistribution := make(map[string]int)
-	nodeStatuses := make(map[string]pkgapi.NodeStatusDetails) // Use API type
+	nodeStatuses := make(map[string]pkgapi.NodeStatus)
 	for _, activeNode := range activeNodes {
 		peerCount, err := s.peerService.CountActiveByNode(ctx, activeNode.ID)
 		if err != nil {
@@ -110,7 +98,7 @@ func (s *adminOrchestrator) GetSystemStatus(ctx context.Context) (*pkgapi.System
 			health = &node.NodeHealthStatus{IsHealthy: false, LastChecked: time.Now()}
 		}
 
-		nodeStatuses[activeNode.ID] = pkgapi.NodeStatusDetails{ // Use API type
+		nodeStatuses[activeNode.ID] = pkgapi.NodeStatus{
 			NodeID:      activeNode.ID,
 			Status:      string(activeNode.Status),
 			PeerCount:   int(peerCount),
@@ -118,26 +106,26 @@ func (s *adminOrchestrator) GetSystemStatus(ctx context.Context) (*pkgapi.System
 			SystemLoad:  health.SystemLoad,
 			MemoryUsage: health.MemoryUsage,
 			DiskUsage:   health.DiskUsage,
-			LastChecked: health.LastChecked,
+			Timestamp:   health.LastChecked,
 		}
 	}
 
-	status := &pkgapi.SystemStatusResponse{ // Use API type
+	status := &pkgapi.SystemStatus{
 		TotalNodes:       int(nodeStats.TotalNodes),
 		ActiveNodes:      int(nodeStats.ActiveNodes),
 		TotalPeers:       int(peerStats.TotalPeers),
 		ActivePeers:      int(peerStats.ActivePeers),
 		NodeDistribution: nodeDistribution,
 		SystemHealth:     s.calculateSystemHealth(nodeStatuses),
-		LastUpdated:      time.Now(),
 		NodeStatuses:     nodeStatuses,
-		Provisioning:     nil, // ProvisioningInfo is now handled by the API layer
+		Provisioning:     nil,
+		Timestamp:        time.Now(),
 	}
 
-	if s.provisioningService != nil { // Renamed from 'provisioner'
-		provisioningStatus := s.provisioningService.GetCurrentStatus() // Renamed from 'provisioner'
+	if s.nodeStateTracker != nil {
+		provisioningStatus := s.nodeStateTracker.GetActiveNode()
 		if provisioningStatus != nil {
-			status.Provisioning = &pkgapi.ProvisioningInfo{ // Use API type
+			status.Provisioning = &pkgapi.ProvisioningInfo{
 				IsActive:     provisioningStatus.IsActive,
 				Phase:        provisioningStatus.Phase,
 				Progress:     provisioningStatus.Progress,
@@ -151,7 +139,7 @@ func (s *adminOrchestrator) GetSystemStatus(ctx context.Context) (*pkgapi.System
 }
 
 // GetNodeStatistics retrieves detailed node statistics
-func (s *adminOrchestrator) GetNodeStatistics(ctx context.Context) (*pkgapi.NodeStatisticsResponse, error) {
+func (s *adminOrchestrator) GetNodeStatistics(ctx context.Context) (*pkgapi.NodeStatistics, error) {
 	op := s.logger.StartOp(ctx, "GetNodeStatistics")
 
 	domainStats, err := s.nodeService.GetNodeStatistics(ctx)
@@ -199,7 +187,7 @@ func (s *adminOrchestrator) GetNodeStatistics(ctx context.Context) (*pkgapi.Node
 		avgDisk = totalDisk / float64(activeCount)
 	}
 
-	statistics := &pkgapi.NodeStatisticsResponse{ // Use API type
+	statistics := &pkgapi.NodeStatistics{
 		TotalNodes:        int(domainStats.TotalNodes),
 		ActiveNodes:       int(domainStats.ActiveNodes),
 		ProvisioningNodes: int(domainStats.ProvisioningNodes),
@@ -208,7 +196,7 @@ func (s *adminOrchestrator) GetNodeStatistics(ctx context.Context) (*pkgapi.Node
 		AverageMemory:     avgMemory,
 		AverageDisk:       avgDisk,
 		NodeDistribution:  nodeDistribution,
-		LastUpdated:       time.Now(),
+		Timestamp:         time.Now(),
 	}
 
 	op.Complete("retrieved node statistics")
@@ -244,76 +232,25 @@ func (s *adminOrchestrator) GetPeerStatistics(ctx context.Context) (*pkgapi.Peer
 		peerDistribution[activeNode.ID] = int(peerCount)
 	}
 
-	statistics := &pkgapi.PeerStatsResponse{ // Use API type
+	statistics := &pkgapi.PeerStatsResponse{
 		TotalPeers:   int(domainStats.TotalPeers),
 		ActiveNodes:  len(activeNodes),
 		Distribution: peerDistribution,
-		LastUpdated:  time.Now(),
+		Timestamp:    time.Now(),
 	}
 
 	op.Complete("retrieved peer statistics")
 	return statistics, nil
 }
 
-// ForceNodeRotation forces an immediate node rotation
-func (s *adminOrchestrator) ForceNodeRotation(ctx context.Context) error {
-	op := s.logger.StartOp(ctx, "ForceNodeRotation", slog.String("trigger", "manual"))
-	if err := s.nodeRotationService.RotateNodes(ctx); err != nil {
-		op.Fail(err, "forced node rotation failed")
-		return err
-	}
-	op.Complete("forced node rotation initiated")
-	return nil
-}
-
-// ManualCleanup performs manual cleanup with specified options
-func (s *adminOrchestrator) ManualCleanup(ctx context.Context, options services.CleanupOptions) (*pkgapi.CleanupResultResponse, error) {
-	op := s.logger.StartOp(ctx, "ManualCleanup", slog.Any("options", options))
-	if err := s.resourceCleanupService.CleanupInactiveResourcesWithOptions(ctx, options); err != nil {
-		op.Fail(err, "manual cleanup failed")
-		return nil, err
-	}
-	result := &pkgapi.CleanupResultResponse{Timestamp: time.Now(), Duration: time.Since(op.StartTime).Milliseconds()} // Use API type
-	op.Complete("manual cleanup finished")
-	return result, nil
-}
-
-// GetRotationStatus retrieves the current rotation status
-func (s *adminOrchestrator) GetRotationStatus(ctx context.Context) (*pkgapi.RotationStatusResponse, error) {
-	op := s.logger.StartOp(ctx, "GetRotationStatus")
-
-	provisioningStatus := node.StatusProvisioning
-	provisioningNodes, err := s.nodeService.ListNodes(ctx, node.Filters{Status: &provisioningStatus})
-	if err != nil {
-		err = apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeNodeNotFound, "failed to check provisioning nodes", true)
-		op.Fail(err, "failed to check provisioning nodes")
-		return nil, err
-	}
-
-	status := &pkgapi.RotationStatusResponse{ // Use API type
-		InProgress:    len(provisioningNodes) > 0,
-		LastRotation:  time.Now().Add(-24 * time.Hour),
-		NodesRotated:  0,
-		PeersMigrated: 0,
-	}
-
-	if status.InProgress {
-		status.RotationReason = "rotation in progress"
-		status.EstimatedComplete = time.Now().Add(10 * time.Minute)
-	}
-
-	op.Complete("retrieved rotation status")
-	return status, nil
-}
-
 // ValidateSystemHealth performs comprehensive system health validation
-func (s *adminOrchestrator) ValidateSystemHealth(ctx context.Context) (*pkgapi.HealthReportResponse, error) {
+func (s *adminOrchestrator) ValidateSystemHealth(ctx context.Context) (*pkgapi.HealthReport, error) {
 	op := s.logger.StartOp(ctx, "ValidateSystemHealth")
 
-	report := &pkgapi.HealthReportResponse{ // Use API type
-		NodeHealth:      make(map[string]pkgapi.NodeHealthDetails), // Use API type
-		LastChecked:     time.Now(),
-		Issues:          []pkgapi.HealthIssueResponse{}, // Use API type
+	report := &pkgapi.HealthReport{
+		NodeHealth:      make(map[string]pkgapi.NodeStatus),
+		Timestamp:       time.Now(),
+		Issues:          []pkgapi.HealthIssue{},
 		Recommendations: []string{},
 	}
 
@@ -327,7 +264,7 @@ func (s *adminOrchestrator) ValidateSystemHealth(ctx context.Context) (*pkgapi.H
 
 	if len(activeNodes) == 0 {
 		report.OverallHealth = "unhealthy"
-		report.Issues = append(report.Issues, pkgapi.HealthIssueResponse{Severity: "critical", Component: "system", Message: "no active nodes available", Timestamp: time.Now()}) // Use API type
+		report.Issues = append(report.Issues, pkgapi.HealthIssue{Severity: "critical", Component: "system", Message: "no active nodes available", Timestamp: time.Now()})
 		report.Recommendations = append(report.Recommendations, "Create at least one active node")
 		op.Fail(fmt.Errorf("no active nodes"), "system health validation failed")
 		return report, nil
@@ -341,19 +278,20 @@ func (s *adminOrchestrator) ValidateSystemHealth(ctx context.Context) (*pkgapi.H
 		health, err := s.nodeService.CheckNodeHealth(ctx, activeNode.ID)
 		if err != nil {
 			s.logger.ErrorCtx(ctx, "failed to check node health", err, slog.String("node_id", activeNode.ID))
-			report.Issues = append(report.Issues, pkgapi.HealthIssueResponse{Severity: "warning", Component: "node", ComponentID: activeNode.ID, Message: fmt.Sprintf("failed to check node health: %v", err), Timestamp: time.Now()}) // Use API type
+			report.Issues = append(report.Issues, pkgapi.HealthIssue{Severity: "warning", Component: "node", ComponentID: activeNode.ID, Message: fmt.Sprintf("failed to check node health: %v", err), Timestamp: time.Now()})
 			continue
 		}
 
-		nodeHealth := pkgapi.NodeHealthDetails{ // Use API type
+		nodeHealth := pkgapi.NodeStatus{
 			NodeID:       activeNode.ID,
+			Status:       string(activeNode.Status),
 			IsHealthy:    health.IsHealthy,
 			SystemLoad:   health.SystemLoad,
 			MemoryUsage:  health.MemoryUsage,
 			DiskUsage:    health.DiskUsage,
 			ResponseTime: health.ResponseTime.Milliseconds(),
-			Issues:       []string{}, // Issues are now part of NodeHealthDetails
-			LastChecked:  health.LastChecked,
+			Issues:       []string{},
+			Timestamp:    health.LastChecked,
 		}
 
 		if !health.IsHealthy {
@@ -378,11 +316,11 @@ func (s *adminOrchestrator) ValidateSystemHealth(ctx context.Context) (*pkgapi.H
 			if health.SystemLoad > 0.9 || health.MemoryUsage > 0.95 || health.DiskUsage > 0.95 {
 				severity = "critical"
 			}
-			report.Issues = append(report.Issues, pkgapi.HealthIssueResponse{Severity: severity, Component: "node", ComponentID: activeNode.ID, Message: issue, Timestamp: time.Now()}) // Use API type
+			report.Issues = append(report.Issues, pkgapi.HealthIssue{Severity: severity, Component: "node", ComponentID: activeNode.ID, Message: issue, Timestamp: time.Now()})
 		}
 	}
 
-	report.SystemMetrics = pkgapi.SystemMetricsResponse{ // Use API type
+	report.SystemMetrics = pkgapi.SystemMetrics{
 		TotalCapacity:   totalNodes * 100,
 		UsedCapacity:    totalNodes - healthyNodes,
 		CapacityUsage:   float64(totalNodes-healthyNodes) / float64(totalNodes),
@@ -406,31 +344,8 @@ func (s *adminOrchestrator) ValidateSystemHealth(ctx context.Context) (*pkgapi.H
 	return report, nil
 }
 
-// GetOrphanedResourcesReport retrieves a report of orphaned resources
-func (s *adminOrchestrator) GetOrphanedResourcesReport(ctx context.Context) (*pkgapi.OrphanedResourcesReportResponse, error) {
-	op := s.logger.StartOp(ctx, "GetOrphanedResourcesReport")
-
-	report, err := s.resourceCleanupService.DetectOrphanedResources(ctx)
-	if err != nil {
-		err = apperrors.WrapWithDomain(err, apperrors.DomainSystem, "report_failed", "failed to detect orphaned resources", true)
-		op.Fail(err, "failed to detect orphaned resources")
-		return nil, err
-	}
-
-	// Convert service-layer report to API response directly here (no external converter yet).
-	if report == nil {
-		return &pkgapi.OrphanedResourcesReportResponse{Timestamp: time.Now()}, nil
-	}
-	return &pkgapi.OrphanedResourcesReportResponse{
-		InactivePeers: report.InactivePeers,
-		OrphanedNodes: report.OrphanedNodes,
-		UnusedSubnets: report.UnusedSubnets,
-		Timestamp:     report.Timestamp,
-	}, nil
-}
-
 // GetCapacityReport retrieves a comprehensive capacity report
-func (s *adminOrchestrator) GetCapacityReport(ctx context.Context) (*pkgapi.CapacityReportResponse, error) {
+func (s *adminOrchestrator) GetCapacityReport(ctx context.Context) (*pkgapi.CapacityReport, error) {
 	op := s.logger.StartOp(ctx, "GetCapacityReport")
 
 	activeStatus := node.StatusActive
@@ -441,9 +356,9 @@ func (s *adminOrchestrator) GetCapacityReport(ctx context.Context) (*pkgapi.Capa
 		return nil, err
 	}
 
-	report := &pkgapi.CapacityReportResponse{ // Use API type
+	report := &pkgapi.CapacityReport{
 		Timestamp: time.Now(),
-		Nodes:     make(map[string]pkgapi.NodeCapacityInfoResponse), // Use API type
+		Nodes:     make(map[string]pkgapi.NodeCapacity),
 	}
 
 	var totalCapacity, totalUsed int
@@ -460,7 +375,7 @@ func (s *adminOrchestrator) GetCapacityReport(ctx context.Context) (*pkgapi.Capa
 			continue
 		}
 
-		nodeCapacity := pkgapi.NodeCapacityInfoResponse{ // Use API type
+		nodeCapacity := pkgapi.NodeCapacity{
 			NodeID:         activeNode.ID,
 			MaxPeers:       availableIPs + int(peerCount),
 			CurrentPeers:   int(peerCount),
@@ -487,7 +402,7 @@ func (s *adminOrchestrator) GetCapacityReport(ctx context.Context) (*pkgapi.Capa
 }
 
 // calculateSystemHealth determines overall system health based on node statuses
-func (s *adminOrchestrator) calculateSystemHealth(nodeStatuses map[string]pkgapi.NodeStatusDetails) string {
+func (s *adminOrchestrator) calculateSystemHealth(nodeStatuses map[string]pkgapi.NodeStatus) string {
 	if len(nodeStatuses) == 0 {
 		return "unhealthy"
 	}

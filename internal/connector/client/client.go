@@ -151,7 +151,7 @@ func (c *Client) GetProvisioningStatus(ctx context.Context) (*api.ProvisioningIn
 }
 
 // GetPeerStatus gets the current status of a peer (for rotation monitoring).
-func (c *Client) GetPeerStatus(ctx context.Context, peerID string) (*api.PeerInfo, error) {
+func (c *Client) GetPeerStatus(ctx context.Context, peerID string) (*api.Peer, error) {
 	url := fmt.Sprintf("%s/api/v1/peers/%s", c.baseURL, peerID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -173,7 +173,7 @@ func (c *Client) GetPeerStatus(ctx context.Context, peerID string) (*api.PeerInf
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var apiResp api.Response[api.PeerInfo]
+		var apiResp api.Response[api.Peer]
 		if err := json.Unmarshal(body, &apiResp); err != nil {
 			return nil, fmt.Errorf("failed to decode API response: %w", err)
 		}
@@ -436,32 +436,36 @@ func (c *Client) connectPeerOnce(ctx context.Context, req *api.ConnectRequest) (
 		}
 
 	case http.StatusServiceUnavailable:
-		var provResp api.ProvisioningResponse
+		var provResp api.ProvisioningInfo
 		if err := json.Unmarshal(body, &provResp); err != nil {
 			return nil, fmt.Errorf("received 503 but failed to decode provisioning response: %w", err)
 		}
-		if provResp.Message == "" {
-			provResp.Message = "Service unavailable, node provisioning may be in progress"
+
+		// Extract estimated wait from provisioning info
+		estimatedWait := 0
+		if provResp.EstimatedETA != nil {
+			estimatedWait = int(time.Until(*provResp.EstimatedETA).Seconds())
 		}
-		if provResp.EstimatedWait == 0 {
-			provResp.EstimatedWait, _ = goutil.ToInt(resp.Header.Get("Retry-After"))
-		}
-		if provResp.RetryAfter == 0 && resp.Header.Get("Retry-After") != "" {
-			retryheader, err := goutil.ToInt(resp.Header.Get("Retry-After"))
-			if err == nil {
-				provResp.RetryAfter = retryheader
+
+		retryAfter := 0
+		if retryHeader := resp.Header.Get("Retry-After"); retryHeader != "" {
+			if val, err := goutil.ToInt(retryHeader); err == nil {
+				retryAfter = val
 			}
 		}
 
 		c.logger.Warn("no active node available for peer connection",
-			"message", provResp.Message,
-			"estimated_wait", provResp.EstimatedWait,
-			"retry_after", provResp.RetryAfter,
+			"phase", provResp.Phase,
+			"progress", provResp.Progress,
+			"estimated_wait", estimatedWait,
+			"retry_after", retryAfter,
 		)
+
+		message := fmt.Sprintf("Service provisioning in progress (phase: %s, progress: %.1f%%)", provResp.Phase, provResp.Progress*100)
 		return nil, &ProvisioningInProgressError{
-			Message:       provResp.Message,
-			EstimatedWait: provResp.EstimatedWait,
-			RetryAfter:    provResp.RetryAfter,
+			Message:       message,
+			EstimatedWait: estimatedWait,
+			RetryAfter:    retryAfter,
 		}
 
 	case http.StatusInternalServerError:
