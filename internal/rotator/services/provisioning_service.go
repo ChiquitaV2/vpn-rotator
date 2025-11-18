@@ -31,7 +31,7 @@ type ProvisioningService struct {
 	nodeInteractor   node.HealthChecker
 	ipService        ip.Service
 	eventPublisher   *events.ProvisioningEventPublisher
-	stateTracker     *events.NodeStateTracker
+	stateTracker     *node.ProvisioningStateTracker
 	logger           *applogger.Logger
 	config           ProvisioningServiceConfig
 
@@ -70,7 +70,7 @@ func NewProvisioningService(
 	config ProvisioningServiceConfig,
 	logger *applogger.Logger,
 ) *ProvisioningService {
-	statueTracker := events.NewNodeStateTracker(eventPublisher, logger)
+	statueTracker := node.NewProvisioningStateTracker(eventPublisher, logger)
 	return &ProvisioningService{
 		nodeService:         nodeService,
 		repository:          repository,
@@ -191,8 +191,8 @@ func (s *ProvisioningService) IsProvisioning() bool {
 	return s.stateTracker.IsProvisioning()
 }
 
-func (s *ProvisioningService) GetCurrentStatus() *events.ProvisioningNodeState {
-	return s.stateTracker.GetActiveNode()
+func (s *ProvisioningService) GetCurrentStatus() *node.ProvisioningState {
+	return s.stateTracker.GetActiveProvisioning()
 }
 
 func (s *ProvisioningService) GetEstimatedWaitTime() time.Duration {
@@ -207,8 +207,8 @@ func (s *ProvisioningService) GetProgress() float64 {
 	return s.stateTracker.GetProgress()
 }
 
-// GetNodeStateTracker returns the state tracker for external queries
-func (s *ProvisioningService) GetNodeStateTracker() *events.NodeStateTracker {
+// GetProvisioningStateTracker returns the state tracker for external queries
+func (s *ProvisioningService) GetProvisioningStateTracker() *node.ProvisioningStateTracker {
 	return s.stateTracker
 }
 

@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
 	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
@@ -34,14 +33,14 @@ type NodeOrchestrator interface {
 
 	// Provisioning status operations
 	IsProvisioning() bool
-	GetProvisioningStatus(ctx context.Context) (*events.ProvisioningNodeState, error)
+	GetProvisioningStatus(ctx context.Context) (*node.ProvisioningState, error)
 }
 
 // NodeOrchestratorImpl orchestrates node rotation and migration
 type NodeOrchestratorImpl struct {
 	nodeRotationService *services.NodeRotationService
 	nodeService         node.NodeService
-	nodeStateTracker    *events.NodeStateTracker
+	nodeStateTracker    *node.ProvisioningStateTracker
 	logger              *applogger.Logger
 }
 
@@ -49,7 +48,7 @@ type NodeOrchestratorImpl struct {
 func NewNodeOrchestrator(
 	nodeRotationService *services.NodeRotationService,
 	nodeService node.NodeService,
-	nodeStateTracker *events.NodeStateTracker,
+	nodeStateTracker *node.ProvisioningStateTracker,
 	logger *applogger.Logger,
 ) NodeOrchestrator {
 	serviceLogger := logger.WithComponent("node.orchestrator")
@@ -126,10 +125,10 @@ func (n *NodeOrchestratorImpl) IsProvisioning() bool {
 }
 
 // GetProvisioningStatus retrieves the current provisioning status
-func (n *NodeOrchestratorImpl) GetProvisioningStatus(ctx context.Context) (*events.ProvisioningNodeState, error) {
+func (n *NodeOrchestratorImpl) GetProvisioningStatus(ctx context.Context) (*node.ProvisioningState, error) {
 	op := n.logger.StartOp(ctx, "GetProvisioningStatus")
 
-	status := n.nodeStateTracker.GetActiveNode()
+	status := n.nodeStateTracker.GetActiveProvisioning()
 	if status == nil {
 		op.Complete("no active provisioning")
 		return nil, nil

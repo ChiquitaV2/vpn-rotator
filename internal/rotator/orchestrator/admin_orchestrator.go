@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
@@ -35,7 +34,7 @@ type adminOrchestrator struct {
 	nodeService      node.NodeService
 	peerService      peer.Service
 	ipService        ip.Service
-	nodeStateTracker *events.NodeStateTracker
+	nodeStateTracker *node.ProvisioningStateTracker
 	logger           *applogger.Logger
 }
 
@@ -44,7 +43,7 @@ func NewAdminOrchestrator(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	nodeStateTracker *events.NodeStateTracker,
+	nodeStateTracker *node.ProvisioningStateTracker,
 	logger *applogger.Logger,
 ) AdminOrchestrator {
 	return &adminOrchestrator{
@@ -123,7 +122,7 @@ func (s *adminOrchestrator) GetSystemStatus(ctx context.Context) (*pkgapi.System
 	}
 
 	if s.nodeStateTracker != nil {
-		provisioningStatus := s.nodeStateTracker.GetActiveNode()
+		provisioningStatus := s.nodeStateTracker.GetActiveProvisioning()
 		if provisioningStatus != nil {
 			status.Provisioning = &pkgapi.ProvisioningInfo{
 				IsActive:     provisioningStatus.IsActive,

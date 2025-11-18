@@ -55,7 +55,8 @@ type LogConfig struct {
 
 // APIConfig defines the API server configuration (ADVANCED)
 type APIConfig struct {
-	ListenAddr string `mapstructure:"listen_addr"` // API server listen address (default: :8080)
+	ListenAddr  string   `mapstructure:"listen_addr"`  // API server listen address (default: :8080)
+	CORSOrigins []string `mapstructure:"cors_origins"` // List of allowed CORS origins (default: [http://localhost:3000])
 }
 
 // DatabaseConfig defines the database configuration (ADVANCED)
@@ -158,7 +159,9 @@ func (c *Config) setDefaults() {
 	if c.API.ListenAddr == "" {
 		c.API.ListenAddr = ":8080"
 	}
-
+	if len(c.API.CORSOrigins) == 0 {
+		c.API.CORSOrigins = []string{"http://localhost:3000"}
+	}
 	// Database defaults
 	if c.Database.Path == "" {
 		c.Database.Path = "./data/rotator.db"

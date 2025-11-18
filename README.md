@@ -106,7 +106,8 @@ docker-compose up -d
 
 The `vpn-rotator` CLI tool allows you to connect to the VPN service.
 
-- `connect`: Connects to the current active VPN node.
+- `connect`: Initiates an asynchronous connection to the VPN, automatically polls for completion, and applies the
+  WireGuard configuration.
 - `disconnect`: Disconnects from the VPN.
 - `status`: Shows the current connection status.
 
@@ -115,6 +116,24 @@ To build the connector:
 ```bash
 go build -o vpn-rotator cmd/connector/main.go
 ```
+
+#### Connection Process
+
+The connection process is fully asynchronous with real-time progress tracking:
+
+1. **Request submission**: The CLI sends a connection request and receives a request ID immediately
+2. **Status polling**: The CLI automatically polls the server every 2 seconds for updates
+3. **Progress tracking**: Connection progress is displayed through distinct phases:
+    - Initializing (0%) - Request received
+    - Validating (10%) - Checking request parameters
+    - Selecting node (20%) - Finding or provisioning a node
+    - Provisioning (40%) - Creating new infrastructure if needed
+    - Configuring peer (60%) - Setting up WireGuard peer
+    - Activating (80%) - Finalizing connection
+    - Completed (100%) - Ready to use
+4. **Automatic configuration**: Once complete, the WireGuard interface is configured automatically
+
+Connection typically takes 2-5 minutes for new node provisioning, or just a few seconds if an active node is available.
 
 ## Development
 

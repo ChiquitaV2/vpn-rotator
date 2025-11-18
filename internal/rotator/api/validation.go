@@ -2,8 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -98,21 +96,6 @@ func ValidatePeerListParams(r *http.Request) (api.PeerListParams, error) {
 func validateWireGuardPublicKey(key string) apperrors.DomainError {
 	if key == "" || !crypto.IsValidWireGuardKey(key) {
 		return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "public key cannot be empty", false, nil)
-	}
-
-	return nil
-}
-
-// validateIPAddress validates an IP address format
-func validateIPAddress(ip string) error {
-	if ip == "" {
-		return fmt.Errorf("IP address cannot be empty")
-	}
-
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "invalid IP address format", false, nil).
-			WithMetadata("ip", ip)
 	}
 	return nil
 }

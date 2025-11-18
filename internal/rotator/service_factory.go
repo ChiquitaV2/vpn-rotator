@@ -51,9 +51,10 @@ type ServiceComponents struct {
 	ProgressReporter events.ProgressReporter
 
 	// Domain services
-	NodeService node.NodeService
-	PeerService peer.Service
-	IPService   ip.Service
+	NodeService           node.NodeService
+	PeerService           peer.Service
+	IPService             ip.Service
+	PeerConnectionTracker *peer.PeerConnectionStateTracker
 
 	// Application services
 	PeerConnectionSvr      *services.PeerConnectionService
@@ -296,6 +297,10 @@ func (f *ServiceFactory) createDomainServices(c *ServiceComponents) error {
 	c.PeerService = peer.NewService(c.PeerRepository, f.logger)
 	f.logger.DebugContext(ctx, "peer service created successfully")
 
+	// Create peer connection state tracker
+	c.PeerConnectionTracker = peer.NewPeerConnectionStateTracker(c.EventPublisher.Peer, f.logger)
+	f.logger.DebugContext(ctx, "peer connection state tracker created successfully")
+
 	// Create node service
 	nodeSvcConfig := f.createNodeServiceConfig()
 	c.NodeService = node.NewService(c.NodeRepository, c.CloudProvisioner, c.NodeInteractor, c.NodeInteractor, f.logger, nodeSvcConfig)
@@ -327,9 +332,14 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		c.IPService,
 		c.NodeInteractor,
 		c.EventPublisher,
+		c.PeerConnectionTracker,
 		f.logger,
 	)
 	f.logger.DebugContext(ctx, "peer connection service created successfully")
+
+	// Start async connection worker
+	go c.PeerConnectionSvr.StartConnectionWorker(ctx)
+	f.logger.DebugContext(ctx, "peer connection worker started")
 
 	// Create resource cleanup service
 	c.ResourceCleanupService = services.NewResourceCleanupService(
@@ -357,7 +367,7 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		c.NodeService,
 		c.PeerService,
 		c.IPService,
-		c.ProvisioningService.GetNodeStateTracker(),
+		c.ProvisioningService.GetProvisioningStateTracker(),
 		f.logger,
 	)
 	f.logger.DebugContext(ctx, "admin orchestrator created successfully")
@@ -366,7 +376,7 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 	c.NodeOrchestrator = orchestrator.NewNodeOrchestrator(
 		c.NodeRotatorService,
 		c.NodeService,
-		c.ProvisioningService.GetNodeStateTracker(),
+		c.ProvisioningService.GetProvisioningStateTracker(),
 		f.logger,
 	)
 	f.logger.DebugContext(ctx, "node orchestrator created successfully")

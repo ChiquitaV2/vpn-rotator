@@ -24,6 +24,16 @@ const (
 	EventNodeDestroyed     = "node.destroyed"
 )
 
+// Peer Connection Events
+const (
+	EventPeerConnectRequested    = "peer.connect.requested"
+	EventPeerConnectProgress     = "peer.connect.progress"
+	EventPeerConnected           = "peer.connected"
+	EventPeerConnectFailed       = "peer.connect.failed"
+	EventPeerDisconnectRequested = "peer.disconnect.requested"
+	EventPeerDisconnected        = "peer.disconnected"
+)
+
 // WireGuard Operation Events
 const (
 	EventWireGuardPeerAdded   = "node.wireguard.peer_added"
@@ -127,6 +137,69 @@ type NodeDestroyedEvent struct {
 	ServerID  string    `json:"server_id,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// -----------------------------------------------------------------------------
+// Peer Connection Events
+// -----------------------------------------------------------------------------
+
+// PeerConnectRequestedEvent represents a request to connect a peer
+type PeerConnectRequestedEvent struct {
+	RequestID    string    `json:"request_id"`
+	PublicKey    *string   `json:"public_key,omitempty"`
+	GenerateKeys bool      `json:"generate_keys"`
+	Timestamp    time.Time `json:"timestamp"`
+}
+
+// PeerConnectProgressEvent represents progress updates during peer connection
+type PeerConnectProgressEvent struct {
+	RequestID string                 `json:"request_id"`
+	PeerID    string                 `json:"peer_id,omitempty"`
+	Phase     string                 `json:"phase"`    // "node_selection", "ip_allocation", "peer_creation", "wireguard_config"
+	Progress  float64                `json:"progress"` // 0.0 to 1.0
+	Message   string                 `json:"message"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Timestamp time.Time              `json:"timestamp"`
+}
+
+// PeerConnectedEvent represents successful peer connection
+type PeerConnectedEvent struct {
+	RequestID        string        `json:"request_id"`
+	PeerID           string        `json:"peer_id"`
+	NodeID           string        `json:"node_id"`
+	PublicKey        string        `json:"public_key"`
+	AllocatedIP      string        `json:"allocated_ip"`
+	ServerPublicKey  string        `json:"server_public_key"`
+	ServerIP         string        `json:"server_ip"`
+	ServerPort       int           `json:"server_port"`
+	ClientPrivateKey *string       `json:"client_private_key,omitempty"`
+	Duration         time.Duration `json:"duration"`
+	Timestamp        time.Time     `json:"timestamp"`
+}
+
+// PeerConnectFailedEvent represents a peer connection failure
+type PeerConnectFailedEvent struct {
+	RequestID string    `json:"request_id"`
+	Phase     string    `json:"phase"`
+	Error     string    `json:"error"`
+	Retryable bool      `json:"retryable"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// PeerDisconnectRequestedEvent represents a request to disconnect a peer
+type PeerDisconnectRequestedEvent struct {
+	RequestID string    `json:"request_id"`
+	PeerID    string    `json:"peer_id"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// PeerDisconnectedEvent represents successful peer disconnection
+type PeerDisconnectedEvent struct {
+	RequestID string        `json:"request_id"`
+	PeerID    string        `json:"peer_id"`
+	NodeID    string        `json:"node_id"`
+	Duration  time.Duration `json:"duration"`
+	Timestamp time.Time     `json:"timestamp"`
 }
 
 // -----------------------------------------------------------------------------

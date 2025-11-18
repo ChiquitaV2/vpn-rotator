@@ -101,6 +101,9 @@ func (s *Server) Stop(ctx context.Context) error {
 
 // registerRoutes registers API routes with middleware.
 func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
+	// Serve static files
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+
 	// Health check endpoint
 	mux.HandleFunc("/health", s.healthHandler())
 
@@ -109,6 +112,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/disconnect", s.disconnectHandler())
 	mux.HandleFunc("GET /api/v1/peers", s.listPeersHandler())
 	mux.HandleFunc("GET /api/v1/peers/{peerID}", s.getPeerHandler())
+	mux.HandleFunc("GET /api/v1/connections/{requestID}", s.getConnectionStatusHandler())
 
 	// Admin routes
 	mux.HandleFunc("GET /api/v1/admin/status", s.systemStatusHandler())

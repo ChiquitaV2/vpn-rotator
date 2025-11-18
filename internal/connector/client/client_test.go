@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
@@ -95,75 +94,171 @@ func TestClient_GetPeerStatus(t *testing.T) {
 	})
 }
 
+func TestClient_GetConnectionStatus(t *testing.T) {
+	log := logger.NewDevelopment("client_test")
+
+	t.Run("success - completed connection", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/connections/req-123" {
+				t.Errorf("expected path /api/v1/connections/req-123, got %s", r.URL.Path)
+			}
+			if r.Method != "GET" {
+				t.Errorf("expected method GET, got %s", r.Method)
+			}
+
+			resp := api.Response[api.PeerConnectionStatus]{
+				Success: true,
+				Data: api.PeerConnectionStatus{
+					RequestID: "req-123",
+					PeerID:    "peer-456",
+					Phase:     "completed",
+					Progress:  100.0,
+					IsActive:  false,
+					Message:   "Connection completed successfully",
+					ConnectionDetails: &api.ConnectResponse{
+						PeerID:          "peer-456",
+						ServerPublicKey: "server-key",
+						ServerIP:        "1.2.3.4",
+						ServerPort:      51820,
+						ClientIP:        "10.0.0.2",
+						DNS:             []string{"8.8.8.8"},
+						AllowedIPs:      []string{"0.0.0.0/0"},
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(resp)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, log)
+		status, err := client.GetConnectionStatus(context.Background(), "req-123")
+
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if status == nil {
+			t.Fatal("expected status, got nil")
+		}
+		if status.Phase != "completed" {
+			t.Errorf("expected phase 'completed', got %s", status.Phase)
+		}
+		if status.ConnectionDetails == nil {
+			t.Fatal("expected connection details, got nil")
+		}
+		if status.ConnectionDetails.PeerID != "peer-456" {
+			t.Errorf("expected peer ID peer-456, got %s", status.ConnectionDetails.PeerID)
+		}
+	})
+
+	t.Run("success - in progress", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			resp := api.Response[api.PeerConnectionStatus]{
+				Success: true,
+				Data: api.PeerConnectionStatus{
+					RequestID: "req-123",
+					Phase:     "provisioning_node",
+					Progress:  40.0,
+					IsActive:  true,
+					Message:   "Provisioning WireGuard node...",
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(resp)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, log)
+		status, err := client.GetConnectionStatus(context.Background(), "req-123")
+
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if status.Phase != "provisioning_node" {
+			t.Errorf("expected phase 'provisioning_node', got %s", status.Phase)
+		}
+		if status.Progress != 40.0 {
+			t.Errorf("expected progress 40.0, got %f", status.Progress)
+		}
+		if !status.IsActive {
+			t.Error("expected IsActive to be true")
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, log)
+		_, err := client.GetConnectionStatus(context.Background(), "req-unknown")
+
+		if err == nil {
+			t.Fatal("expected an error, got nil")
+		}
+		if !strings.Contains(err.Error(), "connection request not found") {
+			t.Errorf("expected error to contain 'connection request not found', got '%v'", err)
+		}
+	})
+}
+
 func TestClient_ConnectPeer(t *testing.T) {
 	log := logger.NewDevelopment("client_test")
 	key := "test-key"
 	connectReq := &api.ConnectRequest{PublicKey: &key, GenerateKeys: false}
 
-	t.Run("success on first attempt", func(t *testing.T) {
+	t.Run("async success - immediate completion", func(t *testing.T) {
+		pollCount := 0
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/api/v1/connect" {
-				t.Errorf("expected path /api/v1/connect, got %s", r.URL.Path)
-			}
-			if r.Method != "POST" {
-				t.Errorf("expected method POST, got %s", r.Method)
-			}
-
-			resp := api.Response[api.ConnectResponse]{
-				Success: true,
-				Data: api.ConnectResponse{
-					PeerID:          "peer-123",
-					ServerPublicKey: "server-key",
-					ServerIP:        "1.2.3.4",
-					ClientIP:        "10.0.0.2",
-				},
-			}
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(resp)
-		}))
-		defer server.Close()
-
-		client := NewClient(server.URL, log)
-		resp, err := client.ConnectPeer(context.Background(), connectReq)
-
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if resp == nil {
-			t.Fatal("expected a response, got nil")
-		}
-		if resp.PeerID != "peer-123" {
-			t.Errorf("expected peer ID peer-123, got %s", resp.PeerID)
-		}
-		if resp.ServerPort != 51820 {
-			t.Errorf("expected default port 51820, got %d", resp.ServerPort)
-		}
-	})
-
-	t.Run("success on retry", func(t *testing.T) {
-		attempt := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if attempt == 0 {
-				w.WriteHeader(http.StatusInternalServerError)
-				attempt++
+			if r.URL.Path == "/api/v1/connect" && r.Method == "POST" {
+				// Return 202 Accepted with request ID
+				resp := api.Response[map[string]string]{
+					Success: true,
+					Data: map[string]string{
+						"request_id": "req-123",
+						"message":    "Connection request accepted. Poll /api/v1/connections/req-123 for status",
+					},
+				}
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(resp)
 				return
 			}
-			resp := api.Response[api.ConnectResponse]{
-				Success: true,
-				Data: api.ConnectResponse{
-					PeerID:          "peer-123",
-					ServerPublicKey: "server-key",
-					ServerIP:        "1.2.3.4",
-					ClientIP:        "10.0.0.2",
-				},
+
+			if strings.HasPrefix(r.URL.Path, "/api/v1/connections/") && r.Method == "GET" {
+				pollCount++
+				// Return completed status immediately
+				resp := api.Response[api.PeerConnectionStatus]{
+					Success: true,
+					Data: api.PeerConnectionStatus{
+						RequestID: "req-123",
+						PeerID:    "peer-456",
+						Phase:     "completed",
+						Progress:  100.0,
+						IsActive:  false,
+						Message:   "Connection completed",
+						ConnectionDetails: &api.ConnectResponse{
+							PeerID:          "peer-456",
+							ServerPublicKey: "server-key",
+							ServerIP:        "1.2.3.4",
+							ServerPort:      51820,
+							ClientIP:        "10.0.0.2",
+							DNS:             []string{"8.8.8.8"},
+							AllowedIPs:      []string{"0.0.0.0/0"},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(resp)
+				return
 			}
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(resp)
+
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
 		}))
 		defer server.Close()
 
 		client := NewClient(server.URL, log)
-		client.httpClient.Timeout = 5 * time.Second
 		resp, err := client.ConnectPeer(context.Background(), connectReq)
 
 		if err != nil {
@@ -172,26 +267,147 @@ func TestClient_ConnectPeer(t *testing.T) {
 		if resp == nil {
 			t.Fatal("expected a response, got nil")
 		}
-		if resp.PeerID != "peer-123" {
-			t.Errorf("expected peer ID peer-123, got %s", resp.PeerID)
+		if resp.PeerID != "peer-456" {
+			t.Errorf("expected peer ID peer-456, got %s", resp.PeerID)
+		}
+		if resp.ServerPort != 51820 {
+			t.Errorf("expected port 51820, got %d", resp.ServerPort)
+		}
+		if pollCount < 1 {
+			t.Errorf("expected at least 1 poll, got %d", pollCount)
 		}
 	})
 
-	t.Run("failure after retries", func(t *testing.T) {
+	t.Run("async success - progressive phases", func(t *testing.T) {
+		pollCount := 0
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
+			if r.URL.Path == "/api/v1/connect" && r.Method == "POST" {
+				resp := api.Response[map[string]string]{
+					Success: true,
+					Data: map[string]string{
+						"request_id": "req-456",
+						"message":    "Connection request accepted",
+					},
+				}
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+
+			if strings.HasPrefix(r.URL.Path, "/api/v1/connections/") && r.Method == "GET" {
+				pollCount++
+
+				// Simulate progressive phases
+				var phase string
+				var progress float64
+				var isActive bool
+				var connectionDetails *api.ConnectResponse
+
+				if pollCount == 1 {
+					phase = "selecting_node"
+					progress = 20.0
+					isActive = true
+				} else if pollCount == 2 {
+					phase = "configuring_peer"
+					progress = 60.0
+					isActive = true
+				} else {
+					phase = "completed"
+					progress = 100.0
+					isActive = false
+					connectionDetails = &api.ConnectResponse{
+						PeerID:          "peer-789",
+						ServerPublicKey: "server-key",
+						ServerIP:        "1.2.3.4",
+						ServerPort:      51820,
+						ClientIP:        "10.0.0.3",
+						DNS:             []string{"8.8.8.8"},
+						AllowedIPs:      []string{"0.0.0.0/0"},
+					}
+				}
+
+				resp := api.Response[api.PeerConnectionStatus]{
+					Success: true,
+					Data: api.PeerConnectionStatus{
+						RequestID:         "req-456",
+						PeerID:            "peer-789",
+						Phase:             phase,
+						Progress:          progress,
+						IsActive:          isActive,
+						ConnectionDetails: connectionDetails,
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
 		}))
 		defer server.Close()
 
 		client := NewClient(server.URL, log)
-		client.httpClient.Timeout = 5 * time.Second
+		resp, err := client.ConnectPeer(context.Background(), connectReq)
+
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if resp == nil {
+			t.Fatal("expected a response, got nil")
+		}
+		if resp.PeerID != "peer-789" {
+			t.Errorf("expected peer ID peer-789, got %s", resp.PeerID)
+		}
+		if pollCount < 3 {
+			t.Errorf("expected at least 3 polls (for phases), got %d", pollCount)
+		}
+	})
+
+	t.Run("connection failed", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v1/connect" && r.Method == "POST" {
+				resp := api.Response[map[string]string]{
+					Success: true,
+					Data: map[string]string{
+						"request_id": "req-fail",
+						"message":    "Connection request accepted",
+					},
+				}
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+
+			if strings.HasPrefix(r.URL.Path, "/api/v1/connections/") && r.Method == "GET" {
+				resp := api.Response[api.PeerConnectionStatus]{
+					Success: true,
+					Data: api.PeerConnectionStatus{
+						RequestID:    "req-fail",
+						Phase:        "failed",
+						Progress:     0.0,
+						IsActive:     false,
+						Message:      "Connection failed",
+						ErrorMessage: "Failed to provision node: timeout",
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, log)
 		_, err := client.ConnectPeer(context.Background(), connectReq)
 
 		if err == nil {
 			t.Fatal("expected an error, got nil")
 		}
-		if !strings.Contains(err.Error(), "failed to connect peer after retries") {
-			t.Errorf("expected error to contain 'failed to connect peer after retries', got '%v'", err)
+		if !strings.Contains(err.Error(), "peer connection failed") {
+			t.Errorf("expected error to contain 'peer connection failed', got '%v'", err)
 		}
 	})
 }
@@ -252,157 +468,4 @@ func TestClient_DisconnectPeer(t *testing.T) {
 		}
 	})
 
-	t.Run("provisioning in progress - wait and retry", func(t *testing.T) {
-		key := "test-key"
-		connectReq := &api.ConnectRequest{PublicKey: &key, GenerateKeys: false}
-		attempt := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/v1/provisioning/status" {
-				// Mock provisioning status endpoint
-				provisioningInfo := api.ProvisioningInfo{
-					IsActive: attempt == 0, // Active on first check, inactive on second
-					Phase:    "cloud_provision",
-					Progress: 0.7,
-				}
-				resp := api.Response[api.ProvisioningInfo]{
-					Success: true,
-					Data:    provisioningInfo,
-				}
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(resp)
-				return
-			}
-
-			if attempt == 0 {
-				// First attempt - return provisioning in progress
-				provisioningResp := map[string]interface{}{
-					"error":          "provisioning_required",
-					"message":        "Node provisioning in progress",
-					"estimated_wait": 10,
-					"retry_after":    5,
-				}
-				w.WriteHeader(http.StatusAccepted)
-				json.NewEncoder(w).Encode(provisioningResp)
-				attempt++
-				return
-			}
-
-			// Second attempt - success
-			resp := api.Response[api.ConnectResponse]{
-				Success: true,
-				Data: api.ConnectResponse{
-					PeerID:          "peer-123",
-					ServerPublicKey: "server-key",
-					ServerIP:        "1.2.3.4",
-					ClientIP:        "10.0.0.2",
-				},
-			}
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(resp)
-		}))
-		defer server.Close()
-
-		client := NewClient(server.URL, log)
-		// Configure shorter waits for testing
-		client.SetProvisioningWaitConfig(2, 1*time.Second)
-
-		start := time.Now()
-		resp, err := client.ConnectPeer(context.Background(), connectReq)
-		duration := time.Since(start)
-
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if resp == nil {
-			t.Fatal("expected a response, got nil")
-		}
-		if resp.PeerID != "peer-123" {
-			t.Errorf("expected peer ID peer-123, got %s", resp.PeerID)
-		}
-
-		// Should have waited some time for provisioning (but mock completes quickly)
-		if duration < 500*time.Millisecond {
-			t.Errorf("expected to wait at least 500ms for provisioning, but only waited %v", duration)
-		}
-	})
-
-	t.Run("provisioning timeout", func(t *testing.T) {
-		key := "test-key"
-		connectReq := &api.ConnectRequest{PublicKey: &key, GenerateKeys: false}
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/api/v1/provisioning/status" {
-				// Mock provisioning status endpoint - always active
-				provisioningInfo := api.ProvisioningInfo{
-					IsActive: true,
-					Phase:    "cloud_provision",
-					Progress: 0.3,
-				}
-				resp := api.Response[api.ProvisioningInfo]{
-					Success: true,
-					Data:    provisioningInfo,
-				}
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(resp)
-				return
-			}
-
-			// Always return provisioning in progress
-			provisioningResp := map[string]interface{}{
-				"error":          "provisioning_required",
-				"message":        "Node provisioning in progress",
-				"estimated_wait": 60,
-				"retry_after":    2,
-			}
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(provisioningResp)
-		}))
-		defer server.Close()
-
-		client := NewClient(server.URL, log)
-		// Configure to timeout quickly for testing
-		client.SetProvisioningWaitConfig(2, 500*time.Millisecond)
-
-		_, err := client.ConnectPeer(context.Background(), connectReq)
-
-		if err == nil {
-			t.Fatal("expected an error due to provisioning timeout, got nil")
-		}
-		if !strings.Contains(err.Error(), "exceeded") {
-			t.Errorf("expected error to contain 'exceeded', got '%v'", err)
-		}
-	})
-
-	t.Run("connect without wait - immediate provisioning error", func(t *testing.T) {
-		key := "test-key"
-		connectReq := &api.ConnectRequest{PublicKey: &key, GenerateKeys: false}
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			provisioningResp := map[string]interface{}{
-				"error":          "provisioning_required",
-				"message":        "Node provisioning in progress",
-				"estimated_wait": 180,
-				"retry_after":    90,
-			}
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(provisioningResp)
-		}))
-		defer server.Close()
-
-		client := NewClient(server.URL, log)
-		_, err := client.ConnectPeerWithoutWait(context.Background(), connectReq)
-
-		if err == nil {
-			t.Fatal("expected a provisioning error, got nil")
-		}
-
-		if provErr, ok := err.(*ProvisioningInProgressError); ok {
-			if provErr.EstimatedWait != 180 {
-				t.Errorf("expected estimated wait 180, got %d", provErr.EstimatedWait)
-			}
-			if provErr.RetryAfter != 90 {
-				t.Errorf("expected retry after 90, got %d", provErr.RetryAfter)
-			}
-		} else {
-			t.Errorf("expected ProvisioningInProgressError, got %T: %v", err, err)
-		}
-	})
 }

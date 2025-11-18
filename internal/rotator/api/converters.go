@@ -13,23 +13,6 @@ func ConvertToServiceConnectRequest(in pkgapi.ConnectRequest) services.ConnectRe
 	}
 }
 
-// ConvertToAPIConnectResponse maps service-layer ConnectResponse to API-layer ConnectResponse.
-func ConvertToAPIConnectResponse(in *services.ConnectResponse) *pkgapi.ConnectResponse {
-	if in == nil {
-		return nil
-	}
-	return &pkgapi.ConnectResponse{
-		PeerID:           in.PeerID,
-		ServerPublicKey:  in.ServerPublicKey,
-		ServerIP:         in.ServerIP,
-		ServerPort:       in.ServerPort,
-		ClientIP:         in.ClientIP,
-		ClientPrivateKey: in.ClientPrivateKey,
-		DNS:              in.DNS,
-		AllowedIPs:       in.AllowedIPs,
-	}
-}
-
 // ConvertToAPIPeerStatus maps service-layer PeerStatus to API-layer Peer.
 func ConvertToAPIPeerStatus(in *services.PeerStatus) *pkgapi.Peer {
 	if in == nil {

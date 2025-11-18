@@ -42,39 +42,19 @@ func WriteErrorResponse(w http.ResponseWriter, r *http.Request, err error) {
 
 	// Check if it's our standard DomainError
 	if domainErr, ok := err.(apperrors.DomainError); ok {
-		// It is! Translate the code to an HTTP status.
-		message = domainErr.Error() // Start with the full error
 		errorCode = domainErr.Code()
 		metadata = domainErr.Metadata()
 
-		switch domainErr.Code() {
-		case apperrors.ErrCodeValidation, apperrors.ErrCodePeerValidation, apperrors.ErrCodeInvalidCIDR, apperrors.ErrCodeInvalidIPAddress:
-			statusCode = http.StatusBadRequest
-			message = "Validation failed: " + domainErr.Error()
+		// Map error codes to HTTP status codes and messages
+		statusCode, message = mapErrorCodeToHTTP(domainErr)
 
-		case apperrors.ErrCodeNodeNotFound, apperrors.ErrCodePeerNotFound, apperrors.ErrCodeSubnetNotFound:
-			statusCode = http.StatusNotFound
-			message = "Resource not found: " + domainErr.Error()
-
-		case apperrors.ErrCodeNodeConflict, apperrors.ErrCodePeerConflict, apperrors.ErrCodePeerIPConflict, apperrors.ErrCodePeerKeyConflict:
-			statusCode = http.StatusConflict
-			message = "Resource conflict: " + domainErr.Error()
-
-		case apperrors.ErrCodeNodeNotReady:
-			// This is the special provisioning case
-			statusCode = http.StatusServiceUnavailable // 503
-			message = "Service is not ready, provisioning in progress. Please try again."
-
-			// Add Retry-After header from error metadata
+		// Special handling for provisioning errors - add Retry-After header
+		if domainErr.Code() == apperrors.ErrCodeNodeNotReady {
 			if retry, ok := metadata["retry_after_sec"]; ok {
 				w.Header().Set("Retry-After", fmt.Sprintf("%v", retry))
 			} else if wait, ok := metadata["estimated_wait_sec"]; ok {
 				w.Header().Set("Retry-After", fmt.Sprintf("%v", wait))
 			}
-
-		case apperrors.ErrCodeNodeAtCapacity, apperrors.ErrCodeCapacityExceeded, apperrors.ErrCodeSubnetExhausted:
-			statusCode = http.StatusServiceUnavailable // 503
-			message = "Service capacity exceeded. Please try again later."
 		}
 	}
 
@@ -85,7 +65,42 @@ func WriteErrorResponse(w http.ResponseWriter, r *http.Request, err error) {
 			Code:      errorCode,
 			Message:   message,
 			RequestID: requestID,
-			Metadata:  metadata, // Include metadata
+			Metadata:  metadata,
 		},
 	})
+}
+
+// mapErrorCodeToHTTP maps domain error codes to HTTP status codes and user-friendly messages.
+func mapErrorCodeToHTTP(err apperrors.DomainError) (int, string) {
+	code := err.Code()
+	errMsg := err.Error()
+
+	switch code {
+	// 400 Bad Request - validation errors
+	case apperrors.ErrCodeValidation, apperrors.ErrCodePeerValidation,
+		apperrors.ErrCodeInvalidCIDR, apperrors.ErrCodeInvalidIPAddress:
+		return http.StatusBadRequest, "Validation failed: " + errMsg
+
+	// 404 Not Found - resource not found
+	case apperrors.ErrCodeNodeNotFound, apperrors.ErrCodePeerNotFound,
+		apperrors.ErrCodeSubnetNotFound:
+		return http.StatusNotFound, "Resource not found: " + errMsg
+
+	// 409 Conflict - resource conflicts
+	case apperrors.ErrCodeNodeConflict, apperrors.ErrCodePeerConflict,
+		apperrors.ErrCodePeerIPConflict, apperrors.ErrCodePeerKeyConflict:
+		return http.StatusConflict, "Resource conflict: " + errMsg
+
+	// 503 Service Unavailable - provisioning or capacity issues
+	case apperrors.ErrCodeNodeNotReady:
+		return http.StatusServiceUnavailable, "Service is not ready, provisioning in progress. Please try again."
+
+	case apperrors.ErrCodeNodeAtCapacity, apperrors.ErrCodeCapacityExceeded,
+		apperrors.ErrCodeSubnetExhausted:
+		return http.StatusServiceUnavailable, "Service capacity exceeded. Please try again later."
+
+	// 500 Internal Server Error - default fallback
+	default:
+		return http.StatusInternalServerError, "An internal server error occurred"
+	}
 }

@@ -30,21 +30,26 @@ func (s *Server) connectHandler() http.HandlerFunc {
 		}
 		op.Progress("request validated")
 
-		// Convert API -> service request and call service directly
+		// Convert API -> service request and initiate async connection
 		svcReq := ConvertToServiceConnectRequest(req)
-		svcResp, err := s.peerConnectionService.ConnectPeer(ctx, svcReq)
+		requestID, err := s.peerConnectionService.ConnectPeerAsync(ctx, svcReq)
 		if err != nil {
-			op.Fail(err, "failed to connect peer")
+			op.Fail(err, "failed to initiate peer connection")
 			WriteErrorResponse(w, r, err)
 			return
 		}
-		// Convert service -> API response
-		response := ConvertToAPIConnectResponse(svcResp)
+
+		// Return 202 Accepted with request ID for status polling
+		w.WriteHeader(http.StatusAccepted)
+		response := map[string]string{
+			"request_id": requestID,
+			"message":    "Connection request accepted. Poll /api/v1/connections/" + requestID + " for status",
+		}
 		if err := WriteSuccess(w, response); err != nil {
 			op.Fail(err, "failed to encode response")
 			return
 		}
-		op.Complete("peer connected successfully", slog.String("peer_id", response.PeerID))
+		op.Complete("connection request accepted", slog.String("request_id", requestID))
 	}
 }
 
@@ -148,5 +153,63 @@ func (s *Server) getPeerHandler() http.HandlerFunc {
 			return
 		}
 		op.Complete("retrieved peer status successfully")
+	}
+}
+
+// getConnectionStatusHandler handles connection status requests
+func (s *Server) getConnectionStatusHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		logger := GetLogger(ctx)
+		requestID := r.PathValue("requestID")
+		op := logger.StartOp(ctx, "getConnectionStatusHandler", slog.String("request_id", requestID))
+
+		if requestID == "" {
+			err := apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "Request ID is required in URL path", false, nil)
+			op.Fail(err, "missing request id")
+			WriteErrorResponse(w, r, err)
+			return
+		}
+
+		state, err := s.peerConnectionService.GetConnectionStatus(ctx, requestID)
+		if err != nil {
+			op.Fail(err, "failed to get connection status")
+			WriteErrorResponse(w, r, err)
+			return
+		}
+
+		// Convert to API response
+		status := api.PeerConnectionStatus{
+			RequestID:    state.RequestID,
+			PeerID:       state.PeerID,
+			Phase:        state.Phase,
+			Progress:     state.Progress,
+			IsActive:     state.IsActive,
+			Message:      state.Message,
+			ErrorMessage: state.ErrorMessage,
+			StartedAt:    state.StartedAt,
+			LastUpdated:  state.LastUpdated,
+			EstimatedETA: state.EstimatedETA,
+		}
+
+		// If completed, include connection details
+		if state.Phase == "completed" && state.PeerID != "" {
+			status.ConnectionDetails = &api.ConnectResponse{
+				PeerID:           state.PeerID,
+				ServerPublicKey:  state.ServerPublicKey,
+				ServerIP:         state.ServerIP,
+				ServerPort:       state.ServerPort,
+				ClientIP:         state.AllocatedIP,
+				ClientPrivateKey: state.ClientPrivateKey,
+				DNS:              []string{"1.1.1.1", "8.8.8.8"},
+				AllowedIPs:       []string{"0.0.0.0/0"},
+			}
+		}
+
+		if err := WriteSuccess(w, status); err != nil {
+			op.Fail(err, "failed to encode response")
+			return
+		}
+		op.Complete("retrieved connection status successfully")
 	}
 }

@@ -23,6 +23,7 @@ type EventPublisher struct {
 	logger       *applogger.Logger
 	Provisioning *ProvisioningEventPublisher
 	Node         *NodeEventPublisher
+	Peer         *PeerEventPublisher
 	WireGuard    *WireGuardEventPublisher
 	System       *SystemEventPublisher
 	Resource     *ResourceEventPublisher
@@ -39,6 +40,7 @@ func NewEventPublisher(bus events.EventBus, logger *applogger.Logger) *EventPubl
 		logger:       scopedLogger,
 		Provisioning: &ProvisioningEventPublisher{basePublisher},
 		Node:         &NodeEventPublisher{basePublisher},
+		Peer:         &PeerEventPublisher{basePublisher},
 		WireGuard:    &WireGuardEventPublisher{basePublisher},
 		System:       &SystemEventPublisher{basePublisher},
 		Resource:     &ResourceEventPublisher{basePublisher},
@@ -245,6 +247,128 @@ func (p *NodeEventPublisher) PublishNodeDestroyed(ctx context.Context, nodeID, s
 // OnNodeStatusChanged subscribes to node status changed events.
 func (p *NodeEventPublisher) OnNodeStatusChanged(handler events.EventHandler) (events.UnsubscribeFunc, error) {
 	return p.Subscribe(EventNodeStatusChanged, handler)
+}
+
+// =============================================================================
+// PEER CONNECTION EVENTS
+// =============================================================================
+
+// PeerEventPublisher handles peer connection-specific events.
+type PeerEventPublisher struct {
+	*DomainEventPublisher
+}
+
+// PublishPeerConnectRequested publishes a peer connection request event.
+func (p *PeerEventPublisher) PublishPeerConnectRequested(ctx context.Context, requestID string, publicKey *string, generateKeys bool) error {
+	metadata := map[string]interface{}{
+		"request_id":    requestID,
+		"generate_keys": generateKeys,
+	}
+	if publicKey != nil {
+		metadata["public_key"] = *publicKey
+	}
+	return p.PublishSimple(ctx, EventPeerConnectRequested, metadata)
+}
+
+// PublishPeerConnectProgress publishes peer connection progress.
+func (p *PeerEventPublisher) PublishPeerConnectProgress(ctx context.Context, requestID, peerID, phase string, progress float64, message string, metadata map[string]interface{}) error {
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+	metadata["request_id"] = requestID
+	metadata["phase"] = phase
+	metadata["progress"] = progress
+	metadata["message"] = message
+	if peerID != "" {
+		metadata["peer_id"] = peerID
+	}
+	return p.PublishSimple(ctx, EventPeerConnectProgress, metadata)
+}
+
+// PublishPeerConnected publishes a successful peer connection event.
+func (p *PeerEventPublisher) PublishPeerConnected(ctx context.Context, requestID, peerID, nodeID, publicKey, allocatedIP, serverPublicKey, serverIP string, serverPort int, clientPrivateKey *string, duration time.Duration) error {
+	metadata := map[string]interface{}{
+		"request_id":        requestID,
+		"peer_id":           peerID,
+		"node_id":           nodeID,
+		"public_key":        publicKey,
+		"allocated_ip":      allocatedIP,
+		"server_public_key": serverPublicKey,
+		"server_ip":         serverIP,
+		"server_port":       serverPort,
+		"duration":          duration.String(),
+		"duration_ms":       duration.Milliseconds(),
+	}
+	if clientPrivateKey != nil {
+		metadata["client_private_key"] = *clientPrivateKey
+	}
+	return p.PublishSimple(ctx, EventPeerConnected, metadata)
+}
+
+// PublishPeerConnectFailed publishes a peer connection failure event.
+func (p *PeerEventPublisher) PublishPeerConnectFailed(ctx context.Context, requestID, phase string, err error) error {
+	_, code, errorMsg, retryable, meta, _, _ := apperrors.UnpackError(err)
+
+	payload := map[string]interface{}{
+		"request_id": requestID,
+		"phase":      phase,
+		"error":      errorMsg,
+		"retryable":  retryable,
+		"error_code": code,
+		"error_meta": meta,
+	}
+
+	p.logger.ErrorCtx(ctx, "publishing peer connect failed event", err, slog.String("request_id", requestID), slog.String("phase", phase))
+	return p.PublishSimple(ctx, EventPeerConnectFailed, payload)
+}
+
+// PublishPeerDisconnectRequested publishes a peer disconnection request event.
+func (p *PeerEventPublisher) PublishPeerDisconnectRequested(ctx context.Context, requestID, peerID string) error {
+	return p.PublishSimple(ctx, EventPeerDisconnectRequested, map[string]interface{}{
+		"request_id": requestID,
+		"peer_id":    peerID,
+	})
+}
+
+// PublishPeerDisconnected publishes a successful peer disconnection event.
+func (p *PeerEventPublisher) PublishPeerDisconnected(ctx context.Context, requestID, peerID, nodeID string, duration time.Duration) error {
+	return p.PublishSimple(ctx, EventPeerDisconnected, map[string]interface{}{
+		"request_id":  requestID,
+		"peer_id":     peerID,
+		"node_id":     nodeID,
+		"duration":    duration.String(),
+		"duration_ms": duration.Milliseconds(),
+	})
+}
+
+// OnPeerConnectRequested subscribes to peer connection request events.
+func (p *PeerEventPublisher) OnPeerConnectRequested(handler events.EventHandler) (events.UnsubscribeFunc, error) {
+	return p.Subscribe(EventPeerConnectRequested, handler)
+}
+
+// OnPeerConnectProgress subscribes to peer connection progress events.
+func (p *PeerEventPublisher) OnPeerConnectProgress(handler events.EventHandler) (events.UnsubscribeFunc, error) {
+	return p.Subscribe(EventPeerConnectProgress, handler)
+}
+
+// OnPeerConnected subscribes to peer connected events.
+func (p *PeerEventPublisher) OnPeerConnected(handler events.EventHandler) (events.UnsubscribeFunc, error) {
+	return p.Subscribe(EventPeerConnected, handler)
+}
+
+// OnPeerConnectFailed subscribes to peer connection failed events.
+func (p *PeerEventPublisher) OnPeerConnectFailed(handler events.EventHandler) (events.UnsubscribeFunc, error) {
+	return p.Subscribe(EventPeerConnectFailed, handler)
+}
+
+// OnPeerDisconnectRequested subscribes to peer disconnection request events.
+func (p *PeerEventPublisher) OnPeerDisconnectRequested(handler events.EventHandler) (events.UnsubscribeFunc, error) {
+	return p.Subscribe(EventPeerDisconnectRequested, handler)
+}
+
+// OnPeerDisconnected subscribes to peer disconnected events.
+func (p *PeerEventPublisher) OnPeerDisconnected(handler events.EventHandler) (events.UnsubscribeFunc, error) {
+	return p.Subscribe(EventPeerDisconnected, handler)
 }
 
 // =============================================================================

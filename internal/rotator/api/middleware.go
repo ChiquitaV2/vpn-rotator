@@ -106,15 +106,29 @@ func Logging() Middleware {
 	}
 }
 
-// responseWriter wraps http.ResponseWriter to capture the status code.
+// responseWriter wraps http.ResponseWriter to capture status code and bytes written.
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode   int
+	bytesWritten int
+	written      bool
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
+	if !rw.written {
+		rw.statusCode = code
+		rw.ResponseWriter.WriteHeader(code)
+		rw.written = true
+	}
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.written {
+		rw.WriteHeader(http.StatusOK)
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytesWritten += n
+	return n, err
 }
 
 // CORS adds CORS headers to responses.

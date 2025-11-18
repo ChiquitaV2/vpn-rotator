@@ -50,6 +50,21 @@ type PeersList struct {
 	Limit      int    `json:"limit"`
 }
 
+// PeerConnectionStatus represents the status of a peer connection request
+type PeerConnectionStatus struct {
+	RequestID         string           `json:"request_id"`
+	PeerID            string           `json:"peer_id,omitempty"`
+	Phase             string           `json:"phase"`
+	Progress          float64          `json:"progress"`
+	IsActive          bool             `json:"is_active"`
+	Message           string           `json:"message,omitempty"`
+	ErrorMessage      string           `json:"error_message,omitempty"`
+	StartedAt         time.Time        `json:"started_at"`
+	LastUpdated       time.Time        `json:"last_updated"`
+	EstimatedETA      *time.Time       `json:"estimated_eta,omitempty"`
+	ConnectionDetails *ConnectResponse `json:"connection_details,omitempty"`
+}
+
 // PeerStatsResponse represents the peer statistics response
 type PeerStatsResponse struct {
 	TotalPeers   int            `json:"total_peers"`

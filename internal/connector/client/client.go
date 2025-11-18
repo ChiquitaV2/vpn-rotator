@@ -150,6 +150,67 @@ func (c *Client) GetProvisioningStatus(ctx context.Context) (*api.ProvisioningIn
 	}
 }
 
+// GetConnectionStatus gets the status of an async peer connection request.
+func (c *Client) GetConnectionStatus(ctx context.Context, requestID string) (*api.PeerConnectionStatus, error) {
+	url := fmt.Sprintf("%s/api/v1/connections/%s", c.baseURL, requestID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.logger.Debug("making connection status API request", "url", url, "request_id", requestID)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var apiResp api.Response[api.PeerConnectionStatus]
+		if err := json.Unmarshal(body, &apiResp); err != nil {
+			return nil, fmt.Errorf("failed to decode API response: %w", err)
+		}
+
+		if !apiResp.Success {
+			return nil, fmt.Errorf("API returned success=false without error details")
+		}
+
+		status := apiResp.Data
+		c.logger.Debug("fetched connection status",
+			"request_id", status.RequestID,
+			"phase", status.Phase,
+			"progress", status.Progress,
+			"is_active", status.IsActive)
+		return &status, nil
+
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("connection request not found")
+
+	case http.StatusInternalServerError:
+		var apiResp api.Response[any]
+		if err := json.Unmarshal(body, &apiResp); err != nil {
+			return nil, fmt.Errorf("received 500 but failed to decode error: %w", err)
+		}
+
+		if apiResp.Error != nil {
+			return nil, fmt.Errorf("internal server error: %s (request ID: %s)",
+				apiResp.Error.Message, apiResp.Error.RequestID)
+		}
+		return nil, fmt.Errorf("internal server error (no details provided)")
+
+	default:
+		c.logger.Error("unexpected API response", "status", resp.StatusCode, "body", string(body))
+		return nil, fmt.Errorf("API returned unexpected status %d", resp.StatusCode)
+	}
+}
+
 // GetPeerStatus gets the current status of a peer (for rotation monitoring).
 func (c *Client) GetPeerStatus(ctx context.Context, peerID string) (*api.Peer, error) {
 	url := fmt.Sprintf("%s/api/v1/peers/%s", c.baseURL, peerID)
@@ -361,34 +422,29 @@ func (c *Client) connectPeerOnce(ctx context.Context, req *api.ConnectRequest) (
 	}
 
 	switch resp.StatusCode {
-	case http.StatusOK:
-		var apiResp api.Response[api.ConnectResponse]
+	case http.StatusAccepted:
+		// HTTP 202 - Async connection initiated, need to poll for status
+		var apiResp api.Response[map[string]string]
 		if err := json.Unmarshal(body, &apiResp); err != nil {
-			return nil, fmt.Errorf("failed to decode API response: %w", err)
+			return nil, fmt.Errorf("failed to decode async response: %w", err)
 		}
 
-		if !apiResp.Success {
-			return nil, fmt.Errorf("API returned success=false without error details")
+		if !apiResp.Success || apiResp.Data == nil {
+			return nil, fmt.Errorf("received 202 but invalid response structure")
 		}
 
-		connectResp := apiResp.Data
-
-		// Validate required fields
-		if connectResp.ServerPublicKey == "" || connectResp.ServerIP == "" || connectResp.ClientIP == "" {
-			return nil, fmt.Errorf("invalid response: missing required fields")
+		requestID := apiResp.Data["request_id"]
+		if requestID == "" {
+			return nil, fmt.Errorf("received 202 but missing request_id")
 		}
 
-		// Set default port if not provided
-		if connectResp.ServerPort == 0 {
-			connectResp.ServerPort = 51820
-		}
+		message := apiResp.Data["message"]
+		c.logger.Info("connection request accepted, polling for completion",
+			"request_id", requestID,
+			"message", message)
 
-		c.logger.Info("successfully connected peer",
-			"peer_id", connectResp.PeerID,
-			"server_ip", connectResp.ServerIP,
-			"client_ip", connectResp.ClientIP,
-		)
-		return &connectResp, nil
+		// Poll for connection completion
+		return c.pollConnectionStatus(ctx, requestID)
 
 	case http.StatusBadRequest:
 		var apiResp api.Response[any]
@@ -400,40 +456,6 @@ func (c *Client) connectPeerOnce(ctx context.Context, req *api.ConnectRequest) (
 			return nil, fmt.Errorf("bad request: %s", apiResp.Error.Message)
 		}
 		return nil, fmt.Errorf("bad request (no details provided)")
-
-	case http.StatusAccepted:
-		// HTTP 202 - Provisioning in progress
-		var provisioningResp map[string]interface{}
-		if err := json.Unmarshal(body, &provisioningResp); err != nil {
-			return nil, fmt.Errorf("received 202 but failed to decode provisioning response: %w", err)
-		}
-
-		message := "Node provisioning in progress"
-		estimatedWait := 180 // Default 3 minutes
-		retryAfter := 90     // Default 1.5 minutes
-
-		if msg, ok := provisioningResp["message"].(string); ok {
-			message = msg
-		}
-		if wait, ok := provisioningResp["estimated_wait"].(float64); ok {
-			estimatedWait = int(wait)
-		}
-		if retry, ok := provisioningResp["retry_after"].(float64); ok {
-			retryAfter = int(retry)
-		}
-
-		c.logger.Info("node provisioning triggered for peer connection",
-			"message", message,
-			"estimated_wait", estimatedWait,
-			"retry_after", retryAfter,
-		)
-
-		// Return a special error that indicates provisioning is in progress
-		return nil, &ProvisioningInProgressError{
-			Message:       message,
-			EstimatedWait: estimatedWait,
-			RetryAfter:    retryAfter,
-		}
 
 	case http.StatusServiceUnavailable:
 		var provResp api.ProvisioningInfo
@@ -639,5 +661,82 @@ func (c *Client) disconnectPeerOnce(ctx context.Context, req *api.DisconnectRequ
 	default:
 		c.logger.Error("unexpected API response", "status", resp.StatusCode, "body", string(body))
 		return nil, fmt.Errorf("API returned unexpected status %d", resp.StatusCode)
+	}
+}
+
+// pollConnectionStatus polls the connection status endpoint until the connection is complete or fails.
+// It polls every 2 seconds for up to 2 minutes (60 attempts).
+// Progress is logged every 10 seconds to provide feedback without overwhelming the logs.
+func (c *Client) pollConnectionStatus(ctx context.Context, requestID string) (*api.ConnectResponse, error) {
+	const (
+		pollInterval = 2 * time.Second
+		maxAttempts  = 60 // 2 minutes total
+		logInterval  = 5  // Log every 5 polls (10 seconds)
+	)
+
+	c.logger.Info("Polling for peer connection completion",
+		"request_id", requestID,
+		"poll_interval", pollInterval,
+		"timeout", pollInterval*maxAttempts)
+
+	attempt := 0
+	for {
+		attempt++
+
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("connection polling cancelled: %w", ctx.Err())
+		default:
+		}
+
+		// Get current status
+		status, err := c.GetConnectionStatus(ctx, requestID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get connection status: %w", err)
+		}
+
+		// Log progress periodically
+		if attempt%logInterval == 0 || status.Phase == "completed" || status.Phase == "failed" {
+			c.logger.Info("Connection progress",
+				"request_id", requestID,
+				"phase", status.Phase,
+				"progress", status.Progress,
+				"attempt", attempt)
+		}
+
+		// Check if connection is complete
+		if status.Phase == "completed" {
+			if status.ConnectionDetails == nil {
+				return nil, fmt.Errorf("connection completed but no connection details provided")
+			}
+
+			c.logger.Info("Peer connection completed successfully",
+				"request_id", requestID,
+				"peer_id", status.PeerID,
+				"server_ip", status.ConnectionDetails.ServerIP)
+
+			// Return the connection details
+			return status.ConnectionDetails, nil
+		}
+
+		// Check if connection failed
+		if status.Phase == "failed" {
+			return nil, fmt.Errorf("peer connection failed: %s", status.Message)
+		}
+
+		// Check if we've exceeded max attempts
+		if attempt >= maxAttempts {
+			return nil, fmt.Errorf("connection polling timed out after %d attempts (phase: %s, progress: %.0f%%)",
+				attempt, status.Phase, status.Progress)
+		}
+
+		// Wait before next poll
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("connection polling cancelled: %w", ctx.Err())
+		case <-time.After(pollInterval):
+			// Continue to next iteration
+		}
 	}
 }

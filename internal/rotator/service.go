@@ -128,7 +128,7 @@ func (s *Service) initializeAPIServer() error {
 	apiServer := api.NewServer(
 		api.ServerConfig{
 			Address:     s.config.API.ListenAddr,
-			CORSOrigins: []string{"*"}, // TODO: Make configurable
+			CORSOrigins: s.config.API.CORSOrigins,
 		},
 		s.components.PeerConnectionSvr,
 		s.components.NodeOrchestrator,
