@@ -69,8 +69,23 @@ Then, run the `connect` command:
 ./vpn-rotator-connector --config connector.yaml connect
 ```
 
-This will connect your device to the VPN. If no node is active, the rotator service will automatically provision one for
-you.
+This will connect your device to the VPN. The connection process is asynchronous:
+
+1. The connector sends a connection request to the rotator service
+2. The service returns a request ID immediately (HTTP 202 Accepted)
+3. The connector polls the status endpoint every 2 seconds
+4. Progress updates are logged as the connection advances through phases:
+    - Initializing (0%)
+    - Validating request (10%)
+    - Selecting node (20%)
+    - Provisioning node if needed (40%)
+    - Configuring peer (60%)
+    - Activating connection (80%)
+    - Completed (100%)
+5. Once completed, the WireGuard configuration is applied automatically
+
+If no node is active, the rotator service will automatically provision one during the process. The entire connection
+typically completes within 2-5 minutes for new node provisioning, or a few seconds if an active node is available.
 
 ## 5. Development
 
