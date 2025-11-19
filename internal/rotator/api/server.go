@@ -8,7 +8,7 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // Server represents the HTTP API server with proper lifecycle management.

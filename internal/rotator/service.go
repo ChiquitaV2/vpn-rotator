@@ -14,8 +14,8 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/scheduler"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // SchedulerManager defines the interface for scheduler operations

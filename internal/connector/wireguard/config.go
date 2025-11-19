@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // ConfigGenerator generates and applies WireGuard configurations.

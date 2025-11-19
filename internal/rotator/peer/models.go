@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // Peer represents a WireGuard peer domain entity

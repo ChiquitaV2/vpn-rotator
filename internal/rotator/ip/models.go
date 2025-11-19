@@ -5,8 +5,8 @@ import (
 	"net"
 	"strings"
 
-	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	sharedErrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // IPv4Address represents a validated IPv4 address

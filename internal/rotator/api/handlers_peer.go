@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // connectHandler handles peer connection requests

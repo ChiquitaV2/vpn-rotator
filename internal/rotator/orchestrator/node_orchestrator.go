@@ -7,8 +7,8 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // RotationStatus represents the current state of node rotation

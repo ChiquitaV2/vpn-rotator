@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net"
 
-	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	sharedLogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	sharedErrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	sharedLogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 type service struct {

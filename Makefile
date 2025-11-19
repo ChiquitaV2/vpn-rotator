@@ -1,8 +1,8 @@
 .PHONY: all build clean test lint fmt sqlc-generate docker-build help
 
 # Variables
-ROTATOR_BIN=cmd/rotator/rotator
-CONNECTOR_BIN=cmd/connector/vpn-rotator
+ROTATOR_BIN=cmd/rotator-server/rotator
+CONNECTOR_BIN=cmd/connector-cli/vpn-rotator
 DOCKER_IMAGE_ROTATOR=vpn-rotator-service
 DOCKER_IMAGE_CONNECTOR=vpn-rotator-cli
 
@@ -11,9 +11,9 @@ all: build
 ## build: Build both binaries
 build:
 	@echo "Building rotator service..."
-	cd cmd/rotator && go build -o rotator
+	cd cmd/rotator-server && go build -o rotator
 	@echo "Building connector CLI..."
-	cd cmd/connector && go build -o vpn-rotator
+	cd cmd/connector-cli && go build -o vpn-rotator
 	@echo "Build complete"
 
 ## clean: Clean build artifacts

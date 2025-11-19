@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	sharedErrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // SubnetAllocator handles subnet allocation logic

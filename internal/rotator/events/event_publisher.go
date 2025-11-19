@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/events"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/events"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // =============================================================================

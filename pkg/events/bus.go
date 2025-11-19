@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 	"github.com/google/uuid"
 	gookitEvent "github.com/gookit/event"
 )

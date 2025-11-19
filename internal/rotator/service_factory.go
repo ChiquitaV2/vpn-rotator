@@ -17,9 +17,9 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/orchestrator"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/services"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/errors"
+	sharedevents "github.com/chiquitav2/vpn-rotator/pkg/events"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // ServiceFactory creates and wires all service components with proper dependency injection.

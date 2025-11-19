@@ -3,7 +3,7 @@ package node
 import (
 	"time"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // Node represents a VPN server node domain entity

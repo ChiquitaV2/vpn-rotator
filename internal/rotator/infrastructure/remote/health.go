@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // CheckNodeHealth performs comprehensive health checking with system metrics collection

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // KeyManager handles WireGuard key generation and management.

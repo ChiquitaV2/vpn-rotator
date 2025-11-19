@@ -11,9 +11,9 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	sharedevents "github.com/chiquitav2/vpn-rotator/pkg/events"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // CloudProvisioner defines the interface for cloud infrastructure provisioning

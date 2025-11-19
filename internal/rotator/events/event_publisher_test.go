@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	sharedevents "github.com/chiquitav2/vpn-rotator/pkg/events"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

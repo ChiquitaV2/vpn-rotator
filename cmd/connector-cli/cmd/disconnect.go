@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 	"github.com/spf13/cobra"
 
 	"github.com/chiquitav2/vpn-rotator/internal/connector"
 	"github.com/chiquitav2/vpn-rotator/internal/connector/config"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 )
 
 // disconnectCmd provides a streamlined disconnection experience

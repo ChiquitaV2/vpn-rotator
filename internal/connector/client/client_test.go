@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 func TestClient_GetPeerStatus(t *testing.T) {

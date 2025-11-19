@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote/ssh"
 	gossh "golang.org/x/crypto/ssh"

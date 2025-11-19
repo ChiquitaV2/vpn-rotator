@@ -9,8 +9,8 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
-	sharedEvents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	sharedEvents "github.com/chiquitav2/vpn-rotator/pkg/events"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 func TestConnectPeerAsync(t *testing.T) {

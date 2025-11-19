@@ -9,8 +9,8 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store/db"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // nodeRepository implements node.NodeRepository using db.Store

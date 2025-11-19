@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 func TestErrorCtx_EnrichesAndOutputsJSON(t *testing.T) {

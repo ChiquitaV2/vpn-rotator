@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker

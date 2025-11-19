@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 	"github.com/gookit/goutil"
 )
 

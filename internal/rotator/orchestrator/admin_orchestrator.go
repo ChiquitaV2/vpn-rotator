@@ -9,9 +9,9 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/ip"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	pkgapi "github.com/chiquitav2/vpn-rotator/pkg/api"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // AdminOrchestrator defines the interface for administrative orchestration operations.

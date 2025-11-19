@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // WriteJSON writes a JSON response with the given status code.

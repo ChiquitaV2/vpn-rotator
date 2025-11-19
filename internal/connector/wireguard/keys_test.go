@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 func TestKeyManager_LoadOrCreateKey(t *testing.T) {

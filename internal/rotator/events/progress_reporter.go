@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // ProgressReporter defines an interface for reporting provisioning progress

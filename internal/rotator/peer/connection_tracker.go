@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
-	sharedevents "github.com/chiquitav2/vpn-rotator/internal/shared/events"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	sharedevents "github.com/chiquitav2/vpn-rotator/pkg/events"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // PeerConnectionState represents the complete state of a peer connection operation

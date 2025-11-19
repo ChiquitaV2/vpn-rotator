@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // ValidateConnectRequest validates a connect request

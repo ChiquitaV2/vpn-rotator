@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 

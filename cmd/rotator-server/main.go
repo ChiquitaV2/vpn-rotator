@@ -7,7 +7,7 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 	_ "github.com/mattn/go-sqlite3"
 )
 

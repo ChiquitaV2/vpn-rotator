@@ -7,9 +7,9 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/node"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/events"
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/events"
 	"github.com/google/uuid"
 )
 

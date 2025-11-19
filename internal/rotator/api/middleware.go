@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	apperrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	applogger "github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
+	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
 	"github.com/google/uuid"
 )
 

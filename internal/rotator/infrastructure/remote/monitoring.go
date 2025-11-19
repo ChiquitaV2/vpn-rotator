@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chiquitav2/vpn-rotator/internal/shared/errors"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/errors"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // OperationMetrics tracks metrics for NodeInteractor operations

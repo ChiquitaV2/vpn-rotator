@@ -6,7 +6,7 @@ import (
 	"net"
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
-	sharedErrors "github.com/chiquitav2/vpn-rotator/internal/shared/errors"
+	sharedErrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 )
 
 // NetworkConfig defines the network configuration for IP allocation

@@ -11,8 +11,8 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/connector/client"
 	"github.com/chiquitav2/vpn-rotator/internal/connector/config"
 	"github.com/chiquitav2/vpn-rotator/internal/connector/wireguard"
-	"github.com/chiquitav2/vpn-rotator/internal/shared/logger"
 	"github.com/chiquitav2/vpn-rotator/pkg/api"
+	"github.com/chiquitav2/vpn-rotator/pkg/logger"
 )
 
 // We'll use the config package's Config type instead of defining our own
