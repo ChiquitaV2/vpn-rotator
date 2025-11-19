@@ -13,11 +13,17 @@ import (
 
 // Peer represents a WireGuard peer domain entity
 type Peer struct {
-	ID              string
-	NodeID          string
-	PublicKey       string
+	ID     string
+	NodeID string
+	// WireGuard fields (legacy)
+	PublicKey    string
+	PresharedKey *string
+	// Protocol-agnostic fields
+	Protocol       string                 // e.g., "wireguard", "algo", "shadowsocks"
+	Identifier     string                 // protocol-specific identifier (e.g., WG public key)
+	ProtocolConfig map[string]interface{} // extra protocol-specific settings
+	// Network assignment
 	AllocatedIP     string
-	PresharedKey    *string
 	Status          Status
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -26,18 +32,43 @@ type Peer struct {
 
 // NewPeer creates a new peer with validation using object pool
 func NewPeer(nodeID, publicKey, allocatedIP string, presharedKey *string) (*Peer, error) {
+	// Legacy helper for WireGuard creation; delegates to generic
+	return NewPeerGeneric(nodeID, "wireguard", publicKey, allocatedIP, map[string]interface{}{
+		"preshared_key": func() interface{} {
+			if presharedKey != nil {
+				return *presharedKey
+			}
+			return nil
+		}(),
+	})
+}
+
+// NewPeerGeneric creates a new protocol-agnostic peer
+func NewPeerGeneric(nodeID, protocol, identifier, allocatedIP string, protocolConfig map[string]interface{}) (*Peer, error) {
 	if err := validateNodeID(nodeID); err != nil {
-		return nil, err
-	}
-	if err := validatePublicKey(publicKey); err != nil {
 		return nil, err
 	}
 	if err := validateIPAddress(allocatedIP); err != nil {
 		return nil, err
 	}
-	if presharedKey != nil {
-		if err := validatePresharedKey(*presharedKey); err != nil {
+
+	// Protocol-aware identifier validation
+	if strings.TrimSpace(protocol) == "" {
+		return nil, apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "protocol cannot be empty", false, nil)
+	}
+	if strings.TrimSpace(identifier) == "" {
+		return nil, apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "identifier cannot be empty", false, nil)
+	}
+	if protocol == "wireguard" || protocol == "wg" || protocol == "WireGuard" {
+		if err := validatePublicKey(identifier); err != nil {
 			return nil, err
+		}
+		if v, ok := protocolConfig["preshared_key"]; ok {
+			if ps, ok2 := v.(string); ok2 && ps != "" {
+				if err := validatePresharedKey(ps); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 
@@ -46,9 +77,21 @@ func NewPeer(nodeID, publicKey, allocatedIP string, presharedKey *string) (*Peer
 
 	// Initialize with provided values
 	peer.NodeID = nodeID
-	peer.PublicKey = publicKey
+	peer.Protocol = strings.ToLower(protocol)
+	peer.Identifier = identifier
+	// Legacy WG mapping for compatibility
+	if peer.Protocol == "wireguard" {
+		peer.PublicKey = identifier
+		if v, ok := protocolConfig["preshared_key"]; ok {
+			if ps, ok2 := v.(string); ok2 && ps != "" {
+				peer.PresharedKey = &ps
+			}
+		}
+	}
+	if protocolConfig != nil {
+		peer.ProtocolConfig = protocolConfig
+	}
 	peer.AllocatedIP = allocatedIP
-	peer.PresharedKey = presharedKey
 	peer.Status = StatusActive
 	peer.CreatedAt = time.Now()
 	peer.UpdatedAt = time.Now()
@@ -101,7 +144,12 @@ func (p *Peer) UpdateLastHandshake(timestamp time.Time) {
 
 // CreateRequest represents a request to create a new peer
 type CreateRequest struct {
-	NodeID       string
+	NodeID string
+	// Protocol-agnostic fields
+	Protocol       string                 // defaults to wireguard if empty
+	Identifier     string                 // required when not generating
+	ProtocolConfig map[string]interface{} // optional protocol-specific settings
+	// Legacy WG fields (still accepted)
 	PublicKey    string
 	AllocatedIP  string
 	PresharedKey *string
@@ -117,18 +165,33 @@ func (r *CreateRequest) Validate() error {
 		return err
 	}
 
-	if err := validatePublicKey(r.PublicKey); err != nil {
-		return err
+	// Default protocol
+	if strings.TrimSpace(r.Protocol) == "" {
+		r.Protocol = "wireguard"
+	}
+
+	// Normalize identifier
+	if strings.TrimSpace(r.Identifier) == "" && strings.TrimSpace(r.PublicKey) != "" {
+		r.Identifier = r.PublicKey
+	}
+	if strings.TrimSpace(r.Identifier) == "" {
+		return apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "identifier cannot be empty", false, nil)
+	}
+
+	// Protocol-aware validation
+	if r.Protocol == "wireguard" || r.Protocol == "wg" || r.Protocol == "WireGuard" {
+		if err := validatePublicKey(r.Identifier); err != nil {
+			return err
+		}
+		if r.PresharedKey != nil {
+			if err := validatePresharedKey(*r.PresharedKey); err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := validateIPAddress(r.AllocatedIP); err != nil {
 		return err
-	}
-
-	if r.PresharedKey != nil {
-		if err := validatePresharedKey(*r.PresharedKey); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -139,8 +202,11 @@ type Filters struct {
 	NodeID    *string
 	Status    *Status
 	PublicKey *string
-	Limit     *int
-	Offset    *int
+	// Protocol-agnostic filter fields (experimental)
+	Protocol   *string
+	Identifier *string
+	Limit      *int
+	Offset     *int
 }
 
 // Statistics represents peer statistics across the system

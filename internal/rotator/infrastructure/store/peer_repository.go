@@ -31,15 +31,24 @@ func NewPeerRepository(store db.Store, log *applogger.Logger) peer.Repository {
 func (r *peerRepository) Create(ctx context.Context, p *peer.Peer) error {
 	start := time.Now()
 	params := db.CreatePeerParams{
-		ID:          p.ID,
-		NodeID:      p.NodeID,
-		PublicKey:   p.PublicKey,
-		AllocatedIp: p.AllocatedIP,
-		Status:      p.Status.String(),
+		ID:             p.ID,
+		NodeID:         p.NodeID,
+		Protocol:       p.Protocol,
+		Identifier:     p.Identifier,
+		ProtocolConfig: sql.NullString{Valid: false},
+		PublicKey:      sql.NullString{Valid: false},
+		AllocatedIp:    p.AllocatedIP,
+		PresharedKey:   sql.NullString{Valid: false},
+		Status:         p.Status.String(),
 	}
 
-	if p.PresharedKey != nil {
-		params.PresharedKey = sql.NullString{String: *p.PresharedKey, Valid: true}
+	if p.Protocol == "wireguard" {
+		if p.PublicKey != "" {
+			params.PublicKey = sql.NullString{String: p.PublicKey, Valid: true}
+		}
+		if p.PresharedKey != nil {
+			params.PresharedKey = sql.NullString{String: *p.PresharedKey, Valid: true}
+		}
 	}
 
 	_, err := r.store.CreatePeer(ctx, params)
@@ -70,18 +79,22 @@ func (r *peerRepository) Get(ctx context.Context, peerID string) (*peer.Peer, er
 
 // GetByPublicKey retrieves a peer by public key
 func (r *peerRepository) GetByPublicKey(ctx context.Context, publicKey string) (*peer.Peer, error) {
+	return r.GetByIdentifier(ctx, "wireguard", publicKey)
+}
+
+// GetByIdentifier retrieves a peer by protocol + identifier (protocol-agnostic API)
+func (r *peerRepository) GetByIdentifier(ctx context.Context, protocolName, identifier string) (*peer.Peer, error) {
 	start := time.Now()
-	dbPeer, err := r.store.GetPeerByPublicKey(ctx, publicKey)
-	r.logger.DBQuery(ctx, "GetPeerByPublicKey", "peers", time.Since(start), slog.String("public_key", publicKey))
+	dbPeer, err := r.store.GetPeerByIdentifier(ctx, db.GetPeerByIdentifierParams{Protocol: protocolName, Identifier: identifier})
+	r.logger.DBQuery(ctx, "GetPeerByIdentifier", "peers", time.Since(start), slog.String("protocol", protocolName), slog.String("identifier", identifier))
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer with public key %s not found", publicKey), false, err)
+			return nil, apperrors.NewPeerError(apperrors.ErrCodePeerNotFound, fmt.Sprintf("peer %s:%s not found", protocolName, identifier), false, err)
 		}
-		r.logger.ErrorCtx(ctx, "failed to get peer by public key", err, slog.String("public_key", publicKey))
-		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get peer by public key", true, err)
+		r.logger.ErrorCtx(ctx, "failed to get peer by identifier", err, slog.String("protocol", protocolName), slog.String("identifier", identifier))
+		return nil, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to get peer by identifier", true, err)
 	}
-
 	return toDomainPeer(&dbPeer), nil
 }
 
@@ -257,13 +270,17 @@ func (r *peerRepository) UpdateNode(ctx context.Context, peerID, nodeID, allocat
 
 // CheckPublicKeyConflict checks if a public key is already in use
 func (r *peerRepository) CheckPublicKeyConflict(ctx context.Context, publicKey string) (bool, error) {
-	start := time.Now()
-	count, err := r.store.CheckPublicKeyConflict(ctx, publicKey)
-	r.logger.DBQuery(ctx, "CheckPublicKeyConflict", "peers", time.Since(start), slog.String("public_key", publicKey))
+	return r.CheckIdentifierConflict(ctx, "wireguard", publicKey)
+}
 
+// CheckIdentifierConflict checks if an identifier is already in use for a protocol
+func (r *peerRepository) CheckIdentifierConflict(ctx context.Context, protocolName, identifier string) (bool, error) {
+	start := time.Now()
+	count, err := r.store.CheckIdentifierConflict(ctx, db.CheckIdentifierConflictParams{Protocol: protocolName, Identifier: identifier})
+	r.logger.DBQuery(ctx, "CheckIdentifierConflict", "peers", time.Since(start), slog.String("protocol", protocolName), slog.String("identifier", identifier))
 	if err != nil {
-		r.logger.ErrorCtx(ctx, "failed to check public key conflict", err)
-		return false, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to check public key conflict", true, err)
+		r.logger.ErrorCtx(ctx, "failed to check identifier conflict", err)
+		return false, apperrors.NewDatabaseError(apperrors.ErrCodeDatabase, "failed to check identifier conflict", true, err)
 	}
 	return count > 0, nil
 }
@@ -349,20 +366,22 @@ func toDomainPeer(dbPeer *db.Peer) *peer.Peer {
 	p := &peer.Peer{
 		ID:          dbPeer.ID,
 		NodeID:      dbPeer.NodeID,
-		PublicKey:   dbPeer.PublicKey,
+		Protocol:    dbPeer.Protocol,
+		Identifier:  dbPeer.Identifier,
 		AllocatedIP: dbPeer.AllocatedIp,
 		Status:      peer.Status(dbPeer.Status),
 		CreatedAt:   dbPeer.CreatedAt,
 		UpdatedAt:   dbPeer.UpdatedAt,
 	}
 
-	if dbPeer.PresharedKey.Valid {
+	if dbPeer.PublicKey.Valid && dbPeer.Protocol == "wireguard" {
+		p.PublicKey = dbPeer.PublicKey.String
+	}
+	if dbPeer.PresharedKey.Valid && dbPeer.Protocol == "wireguard" {
 		p.PresharedKey = &dbPeer.PresharedKey.String
 	}
-
 	if dbPeer.LastHandshakeAt.Valid {
 		p.LastHandshakeAt = &dbPeer.LastHandshakeAt.Time
 	}
-
 	return p
 }

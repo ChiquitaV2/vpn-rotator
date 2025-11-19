@@ -36,9 +36,12 @@ type NodeSubnet struct {
 type Peer struct {
 	ID              string         `json:"id"`
 	NodeID          string         `json:"node_id"`
-	PublicKey       string         `json:"public_key"`
-	AllocatedIp     string         `json:"allocated_ip"`
+	Protocol        string         `json:"protocol"`
+	Identifier      string         `json:"identifier"`
+	ProtocolConfig  sql.NullString `json:"protocol_config"`
+	PublicKey       sql.NullString `json:"public_key"`
 	PresharedKey    sql.NullString `json:"preshared_key"`
+	AllocatedIp     string         `json:"allocated_ip"`
 	Status          string         `json:"status"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`

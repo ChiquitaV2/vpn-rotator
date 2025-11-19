@@ -12,6 +12,7 @@ import (
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/protocol"
 )
 
 // PeerConnectionService handles peer connection and disconnection operations
@@ -19,7 +20,7 @@ type PeerConnectionService struct {
 	nodeService      node.NodeService
 	peerService      peer.Service
 	ipService        ip.Service
-	wireguardManager node.WireGuardManager
+	protoManager     protocol.Manager
 	eventPublisher   *events.EventPublisher
 	progressReporter events.PeerConnectionProgressReporter
 	stateTracker     *peer.PeerConnectionStateTracker
@@ -31,7 +32,7 @@ func NewPeerConnectionService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	wireguardManager node.WireGuardManager,
+	protoManager protocol.Manager,
 	eventPublisher *events.EventPublisher,
 	stateTracker *peer.PeerConnectionStateTracker,
 	logger *applogger.Logger,
@@ -41,7 +42,7 @@ func NewPeerConnectionService(
 		nodeService:      nodeService,
 		peerService:      peerService,
 		ipService:        ipService,
-		wireguardManager: wireguardManager,
+		protoManager:     protoManager,
 		eventPublisher:   eventPublisher,
 		progressReporter: progressReporter,
 		stateTracker:     stateTracker,
@@ -64,7 +65,11 @@ func (s *PeerConnectionService) DisconnectPeer(ctx context.Context, peerID strin
 	if err != nil {
 		s.logger.WarnContext(ctx, "failed to get node for peer removal, infrastructure cleanup will be skipped", "error", err.Error())
 	} else {
-		if err := s.wireguardManager.RemovePeer(ctx, selectedNode.IPAddress, existingPeer.PublicKey); err != nil {
+		identifier := existingPeer.Identifier
+		if identifier == "" {
+			identifier = existingPeer.PublicKey
+		}
+		if err := s.protoManager.RemovePeer(ctx, selectedNode.IPAddress, identifier); err != nil {
 			s.logger.WarnContext(ctx, "failed to remove peer from node infrastructure, continuing", "error", err.Error())
 		}
 	}
@@ -194,15 +199,34 @@ func (s *PeerConnectionService) GetConnectionStatus(ctx context.Context, request
 
 // validateConnectRequest validates the connect request
 func (s *PeerConnectionService) validateConnectRequest(req ConnectRequest) error {
-	if req.PublicKey == nil || *req.PublicKey == "" {
-		if !req.GenerateKeys {
-			return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "public key is required or generate_keys must be true", false, nil)
-		}
+	// Default protocol
+	protocolName := "wireguard"
+	if req.Protocol != nil && *req.Protocol != "" {
+		protocolName = *req.Protocol
 	}
 
-	if req.PublicKey != nil && !crypto.IsValidWireGuardKey(*req.PublicKey) {
+	// Currently only WireGuard is supported in async flow
+	if protocolName != "wireguard" && protocolName != "wg" && protocolName != "WireGuard" {
+		return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "unsupported protocol (only wireguard supported currently)", false, nil).
+			WithMetadata("protocol", protocolName)
+	}
+
+	// Derive identifier for WG (public key)
+	var id string
+	if req.Identifier != nil && *req.Identifier != "" {
+		id = *req.Identifier
+	} else if req.PublicKey != nil && *req.PublicKey != "" {
+		id = *req.PublicKey
+	}
+
+	// Either we have a key/identifier or we must generate
+	if id == "" && !req.GenerateKeys {
+		return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "identifier/public_key is required or generate_keys must be true", false, nil)
+	}
+
+	// Validate WireGuard key format if present
+	if id != "" && !crypto.IsValidWireGuardKey(id) {
 		return apperrors.NewDomainAPIError(apperrors.ErrCodeValidation, "invalid WireGuard public key format", false, nil)
 	}
-
 	return nil
 }

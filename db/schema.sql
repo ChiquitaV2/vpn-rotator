@@ -48,15 +48,22 @@ CREATE TABLE peers
 (
     id                TEXT PRIMARY KEY,         -- UUID
     node_id           TEXT     NOT NULL,        -- Foreign key to nodes.id
-    public_key        TEXT     NOT NULL UNIQUE, -- Client's WireGuard public key
-    allocated_ip      TEXT     NOT NULL UNIQUE, -- Assigned IP address (e.g., "10.8.1.5")
+    -- Protocol-agnostic identity
+    protocol        TEXT NOT NULL DEFAULT 'wireguard',
+    identifier      TEXT NOT NULL,              -- protocol-specific identifier (e.g., WG public key)
+    protocol_config TEXT,                       -- optional JSON-encoded config per protocol
+    -- Legacy WireGuard fields (kept for backward compatibility)
+    public_key      TEXT,                       -- Client's WireGuard public key (mirror of identifier for WG)
     preshared_key     TEXT,                     -- Optional preshared key
+
+    allocated_ip    TEXT NOT NULL UNIQUE,       -- Assigned IP address (e.g., "10.8.1.5")
     status            TEXT     NOT NULL CHECK (status IN ('active', 'disconnected', 'removing')),
     created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_handshake_at DATETIME,                 -- Last activity timestamp
 
-    FOREIGN KEY (node_id) REFERENCES nodes (id) ON DELETE CASCADE
+    FOREIGN KEY (node_id) REFERENCES nodes (id) ON DELETE CASCADE,
+    UNIQUE (protocol, identifier)
 );
 
 -- IP subnet allocation per node
@@ -74,7 +81,7 @@ CREATE TABLE node_subnets
 
 -- Performance indexes for peers table
 CREATE INDEX idx_peers_node_id ON peers (node_id);
-CREATE INDEX idx_peers_public_key ON peers (public_key);
+CREATE INDEX idx_peers_identifier ON peers (protocol, identifier);
 CREATE INDEX idx_peers_status ON peers (status);
 CREATE INDEX idx_peers_allocated_ip ON peers (allocated_ip);
 

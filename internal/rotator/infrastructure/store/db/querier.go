@@ -20,8 +20,10 @@ type Querier interface {
 	CancelNodeDestruction(ctx context.Context, arg CancelNodeDestructionParams) error
 	// Check if an IP address is already allocated
 	CheckIPConflict(ctx context.Context, allocatedIp string) (int64, error)
+	// Check if a protocol+identifier is already in use
+	CheckIdentifierConflict(ctx context.Context, arg CheckIdentifierConflictParams) (int64, error)
 	// Check if a public key is already in use
-	CheckPublicKeyConflict(ctx context.Context, publicKey string) (int64, error)
+	CheckPublicKeyConflict(ctx context.Context, identifier string) (int64, error)
 	// ============================================================================
 	// MIGRATION HELPERS
 	// ============================================================================
@@ -119,8 +121,8 @@ type Querier interface {
 	// ----------------------------------------------------------------------------
 	// Get a specific peer by ID
 	GetPeer(ctx context.Context, id string) (Peer, error)
-	// Get a peer by public key
-	GetPeerByPublicKey(ctx context.Context, publicKey string) (Peer, error)
+	// Get a peer by protocol + identifier
+	GetPeerByIdentifier(ctx context.Context, arg GetPeerByIdentifierParams) (Peer, error)
 	// Get peer statistics across all nodes
 	GetPeerStatistics(ctx context.Context) (GetPeerStatisticsRow, error)
 	// Get all peers for a specific node

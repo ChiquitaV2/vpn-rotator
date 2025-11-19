@@ -193,6 +193,11 @@ type NodeCapacityInfo struct {
 
 // ConnectRequest represents a request to connect a peer to the VPN (service layer)
 type ConnectRequest struct {
+	// Protocol-agnostic identifier fields (experimental)
+	Protocol   *string                `json:"protocol,omitempty"`   // e.g., "wireguard" (default)
+	Identifier *string                `json:"identifier,omitempty"` // protocol-specific identifier
+	Config     map[string]interface{} `json:"config,omitempty"`     // extra protocol-specific settings
+
 	PublicKey    *string `json:"public_key,omitempty"`    // User-provided public key
 	GenerateKeys bool    `json:"generate_keys,omitempty"` // Request server-side key generation
 }

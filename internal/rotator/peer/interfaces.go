@@ -11,6 +11,8 @@ type Service interface {
 	Create(ctx context.Context, req *CreateRequest) (*Peer, error)
 	Get(ctx context.Context, peerID string) (*Peer, error)
 	GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error)
+	// Protocol-agnostic lookup
+	GetByIdentifier(ctx context.Context, protocol, identifier string) (*Peer, error)
 	List(ctx context.Context, filters *Filters) ([]*Peer, error)
 	Remove(ctx context.Context, peerID string) error
 
@@ -38,6 +40,8 @@ type Repository interface {
 	Create(ctx context.Context, peer *Peer) error
 	Get(ctx context.Context, peerID string) (*Peer, error)
 	GetByPublicKey(ctx context.Context, publicKey string) (*Peer, error)
+	// Protocol-agnostic lookup
+	GetByIdentifier(ctx context.Context, protocol, identifier string) (*Peer, error)
 	Delete(ctx context.Context, peerID string) error
 
 	// Query operations
@@ -53,6 +57,8 @@ type Repository interface {
 
 	// Conflict checking
 	CheckPublicKeyConflict(ctx context.Context, publicKey string) (bool, error)
+	// Protocol-agnostic conflict
+	CheckIdentifierConflict(ctx context.Context, protocol, identifier string) (bool, error)
 	CheckIPConflict(ctx context.Context, ipAddress string) (bool, error)
 
 	// Batch operations

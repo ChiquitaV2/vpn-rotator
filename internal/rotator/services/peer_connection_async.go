@@ -10,6 +10,7 @@ import (
 	"github.com/chiquitav2/vpn-rotator/pkg/crypto"
 	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 	"github.com/chiquitav2/vpn-rotator/pkg/events"
+	"github.com/chiquitav2/vpn-rotator/pkg/protocol"
 	"github.com/google/uuid"
 )
 
@@ -23,6 +24,18 @@ func (s *PeerConnectionService) ConnectPeerAsync(ctx context.Context, req Connec
 	// Generate request ID for tracking
 	requestID := uuid.New().String()
 	op.With(slog.String("request_id", requestID))
+
+	// Determine protocol and identifier (defaults)
+	protocolName := "wireguard"
+	if req.Protocol != nil && *req.Protocol != "" {
+		protocolName = *req.Protocol
+	}
+	var identifier *string
+	if req.Identifier != nil && *req.Identifier != "" {
+		identifier = req.Identifier
+	} else if req.PublicKey != nil && *req.PublicKey != "" {
+		identifier = req.PublicKey
+	}
 
 	// Generate keys if requested (need them for the event)
 	if req.GenerateKeys {
@@ -42,9 +55,9 @@ func (s *PeerConnectionService) ConnectPeerAsync(ctx context.Context, req Connec
 		return "", err
 	}
 
-	// Check for existing peer
-	if req.PublicKey != nil {
-		if _, err := s.peerService.GetByPublicKey(ctx, *req.PublicKey); err == nil {
+	// Check for existing peer (prefer identifier)
+	if identifier != nil {
+		if _, err := s.peerService.GetByIdentifier(ctx, protocolName, *identifier); err == nil {
 			// Peer already exists, return request ID (no async work needed)
 			op.Complete("existing peer found")
 			return requestID, nil
@@ -132,16 +145,24 @@ func (s *PeerConnectionService) processConnectionRequest(ctx context.Context, re
 	}
 	op.With(slog.String("peer_id", createdPeer.ID))
 
-	// Configure WireGuard (80% progress)
-	if err := s.progressReporter.ReportProgress(ctx, requestID, createdPeer.ID, "configuring_wireguard", 0.8, "Configuring WireGuard", nil); err != nil {
+	// Configure protocol (80% progress)
+	if err := s.progressReporter.ReportProgress(ctx, requestID, createdPeer.ID, "configuring_peer", 0.8, "Configuring peer on node", nil); err != nil {
 		s.logger.WarnContext(ctx, "failed to report WireGuard config progress", "error", err.Error())
 	}
-	wgConfig := node.PeerWireGuardConfig{
-		PublicKey:  createdPeer.PublicKey,
+	cfg := protocol.PeerConfig{
+		Protocol:   "wireguard",
+		Identifier: createdPeer.Identifier,
 		AllowedIPs: []string{createdPeer.AllocatedIP + "/32"},
+		Config:     map[string]interface{}{},
+	}
+	if cfg.Identifier == "" {
+		cfg.Identifier = createdPeer.PublicKey
+	}
+	if createdPeer.PresharedKey != nil {
+		cfg.Config["preshared_key"] = *createdPeer.PresharedKey
 	}
 
-	if err := s.wireguardManager.AddPeer(ctx, selectedNode.IPAddress, wgConfig); err != nil {
+	if err := s.protoManager.AddPeer(ctx, selectedNode.IPAddress, cfg); err != nil {
 		if cleanupErr := s.peerService.Remove(ctx, createdPeer.ID); cleanupErr != nil {
 			s.logger.ErrorCtx(ctx, "cleanup failed: failed to remove peer after infra add failure", cleanupErr)
 		}
@@ -149,21 +170,13 @@ func (s *PeerConnectionService) processConnectionRequest(ctx context.Context, re
 			s.logger.ErrorCtx(ctx, "cleanup failed: failed to release IP after infra add failure", cleanupErr)
 		}
 		err = apperrors.NewInfrastructureError(apperrors.ErrCodeSSHConnection, "failed to add peer to node infrastructure", true, err)
-		s.handleConnectionError(ctx, requestID, createdPeer.ID, "wireguard_config", err)
+		s.handleConnectionError(ctx, requestID, createdPeer.ID, "peer_config", err)
 		op.Fail(err, "failed to add peer to node")
 		return
 	}
 
-	// Get node public key if needed
+	// Node public key if needed (best-effort, from stored node info)
 	nodePublicKey := selectedNode.ServerPublicKey
-	if nodePublicKey == "" {
-		wgStatus, err := s.wireguardManager.GetWireGuardStatus(ctx, selectedNode.IPAddress)
-		if err != nil {
-			s.logger.WarnContext(ctx, "failed to get node public key from infrastructure", "error", err.Error())
-		} else {
-			nodePublicKey = wgStatus.PublicKey
-		}
-	}
 
 	// Publish connected event (100% progress)
 	if err := s.progressReporter.ReportProgress(ctx, requestID, createdPeer.ID, "completed", 1.0, "Connection complete", nil); err != nil {

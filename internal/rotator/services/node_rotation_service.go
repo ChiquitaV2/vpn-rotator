@@ -14,6 +14,7 @@ import (
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/peer"
 	apperrors "github.com/chiquitav2/vpn-rotator/pkg/errors"
 	applogger "github.com/chiquitav2/vpn-rotator/pkg/logger"
+	"github.com/chiquitav2/vpn-rotator/pkg/protocol"
 )
 
 // NodeRotationService handles node rotation and peer migration operations
@@ -21,7 +22,7 @@ type NodeRotationService struct {
 	nodeService            node.NodeService
 	peerService            peer.Service
 	ipService              ip.Service
-	wireguardManager       node.WireGuardManager
+	protoManager           protocol.Manager
 	resourceCleanupService *ResourceCleanupService
 	eventPublisher         *events.EventPublisher
 	logger                 *applogger.Logger
@@ -32,7 +33,7 @@ func NewNodeRotationService(
 	nodeService node.NodeService,
 	peerService peer.Service,
 	ipService ip.Service,
-	wireguardManager node.WireGuardManager,
+	protoManager protocol.Manager,
 	resourceCleanupService *ResourceCleanupService,
 	eventPublisher *events.EventPublisher,
 	logger *applogger.Logger,
@@ -41,7 +42,7 @@ func NewNodeRotationService(
 		nodeService:            nodeService,
 		peerService:            peerService,
 		ipService:              ipService,
-		wireguardManager:       wireguardManager,
+		protoManager:           protoManager,
 		resourceCleanupService: resourceCleanupService,
 		eventPublisher:         eventPublisher,
 		logger:                 logger.WithComponent("rotation.service"),
@@ -186,13 +187,20 @@ func (s *NodeRotationService) migrateSinglePeer(ctx context.Context, sourcePeer 
 		return apperrors.WrapWithDomain(err, apperrors.DomainNode, apperrors.ErrCodeNodeNotFound, "failed to get target node", false)
 	}
 
-	wgConfig := node.PeerWireGuardConfig{
-		PublicKey:    sourcePeer.PublicKey,
-		PresharedKey: sourcePeer.PresharedKey,
-		AllowedIPs:   []string{newIP.String() + "/32"},
+	cfg := protocol.PeerConfig{
+		Protocol:   "wireguard",
+		Identifier: sourcePeer.Identifier,
+		AllowedIPs: []string{newIP.String() + "/32"},
+		Config:     map[string]interface{}{},
+	}
+	if cfg.Identifier == "" {
+		cfg.Identifier = sourcePeer.PublicKey
+	}
+	if sourcePeer.PresharedKey != nil {
+		cfg.Config["preshared_key"] = *sourcePeer.PresharedKey
 	}
 
-	if err := s.wireguardManager.AddPeer(ctx, targetNode.IPAddress, wgConfig); err != nil {
+	if err := s.protoManager.AddPeer(ctx, targetNode.IPAddress, cfg); err != nil {
 		return apperrors.NewInfrastructureError(apperrors.ErrCodeSSHConnection, "failed to add peer to target node", true, err)
 	}
 
@@ -200,7 +208,11 @@ func (s *NodeRotationService) migrateSinglePeer(ctx context.Context, sourcePeer 
 	if err != nil {
 		s.logger.WarnContext(ctx, "failed to get source node for peer removal, peer will be left on old node", "error", err.Error())
 	} else {
-		if err := s.wireguardManager.RemovePeer(ctx, sourceNode.IPAddress, sourcePeer.PublicKey); err != nil {
+		identifier := sourcePeer.Identifier
+		if identifier == "" {
+			identifier = sourcePeer.PublicKey
+		}
+		if err := s.protoManager.RemovePeer(ctx, sourceNode.IPAddress, identifier); err != nil {
 			s.logger.WarnContext(ctx, "failed to remove peer from source node, continuing", "error", err.Error())
 		}
 	}

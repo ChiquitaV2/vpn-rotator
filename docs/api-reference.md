@@ -1,5 +1,8 @@
 # API Reference
 
+> Note: This document describes the legacy v1 HTTP API. For the new, protocol-agnostic, OIDC-enabled API, see
+`docs/api-v2.md` and the machine-readable `api_v2.yaml`.
+
 This document provides a detailed reference for the VPN Rotator Service API.
 
 ## Base URL
@@ -8,7 +11,7 @@ The base URL for the API is the address of your VPN Rotator service. For example
 
 ## Authentication
 
-The API is open and does not require authentication. It is expected to be run in a trusted environment.
+v1 is unauthenticated and intended for trusted environments. v2 requires OIDC Bearer tokens.
 
 ## Endpoints
 

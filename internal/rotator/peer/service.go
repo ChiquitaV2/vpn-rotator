@@ -28,7 +28,8 @@ func NewService(repo Repository, logger *applogger.Logger) Service {
 // Create creates a new peer with validation
 func (s *service) Create(ctx context.Context, req *CreateRequest) (*Peer, error) {
 	op := s.logger.StartOp(ctx, "CreatePeer",
-		slog.String("public_key", req.PublicKey))
+		slog.String("protocol", req.Protocol),
+		slog.String("identifier", req.Identifier))
 
 	// Validate request
 	if err := req.Validate(); err != nil {
@@ -36,18 +37,18 @@ func (s *service) Create(ctx context.Context, req *CreateRequest) (*Peer, error)
 		return nil, err
 	}
 
-	// Check for public key conflicts
-	conflict, err := s.repo.CheckPublicKeyConflict(ctx, req.PublicKey)
+	// Check for identifier conflicts (protocol-aware)
+	conflict, err := s.repo.CheckIdentifierConflict(ctx, req.Protocol, req.Identifier)
 	if err != nil {
-		domainErr := apperrors.WrapWithDomain(err, apperrors.DomainPeer, apperrors.ErrCodeDatabase, "failed to check public key conflict", true)
-		op.Fail(domainErr, "failed to check public key conflict")
+		domainErr := apperrors.WrapWithDomain(err, apperrors.DomainPeer, apperrors.ErrCodeDatabase, "failed to check identifier conflict", true)
+		op.Fail(domainErr, "failed to check identifier conflict")
 		return nil, domainErr
 	}
 	if conflict {
-		domainErr := apperrors.NewPeerError(apperrors.ErrCodePeerKeyConflict, "public key already in use", false, nil).
-			WithMetadata("public_key", req.PublicKey)
-		s.logger.WarnContext(ctx, "public key conflict", slog.String("public_key", req.PublicKey))
-		op.Fail(domainErr, "public key conflict")
+		domainErr := apperrors.NewPeerError(apperrors.ErrCodePeerKeyConflict, "identifier already in use", false, nil).
+			WithMetadata("protocol", req.Protocol).WithMetadata("identifier", req.Identifier)
+		s.logger.WarnContext(ctx, "identifier conflict", slog.String("protocol", req.Protocol), slog.String("identifier", req.Identifier))
+		op.Fail(domainErr, "identifier conflict")
 		return nil, domainErr
 	}
 
@@ -67,7 +68,16 @@ func (s *service) Create(ctx context.Context, req *CreateRequest) (*Peer, error)
 	}
 
 	// Create peer entity
-	peer, err := NewPeer(req.NodeID, req.PublicKey, req.AllocatedIP, req.PresharedKey)
+	// Build protocol config map
+	cfg := req.ProtocolConfig
+	if cfg == nil {
+		cfg = make(map[string]interface{})
+	}
+	if req.PresharedKey != nil {
+		cfg["preshared_key"] = *req.PresharedKey
+	}
+
+	peer, err := NewPeerGeneric(req.NodeID, req.Protocol, req.Identifier, req.AllocatedIP, cfg)
 	if err != nil {
 		domainErr := apperrors.WrapWithDomain(err, apperrors.DomainPeer, apperrors.ErrCodeInternal, "failed to create peer entity", false)
 		op.Fail(domainErr, "failed to create peer entity")
@@ -128,6 +138,40 @@ func (s *service) GetByPublicKey(ctx context.Context, publicKey string) (*Peer, 
 
 	op.Complete("peer retrieved by public key successfully")
 	return peer, nil
+}
+
+// GetByIdentifier retrieves a peer by protocol + identifier
+func (s *service) GetByIdentifier(ctx context.Context, protocolName, identifier string) (*Peer, error) {
+	op := s.logger.StartOp(ctx, "GetPeerByIdentifier",
+		slog.String("protocol", protocolName),
+		slog.String("identifier", identifier))
+
+	if strings.TrimSpace(protocolName) == "" {
+		err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "protocol cannot be empty", false, nil)
+		op.Fail(err, "validation failed")
+		return nil, err
+	}
+	if strings.TrimSpace(identifier) == "" {
+		err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "identifier cannot be empty", false, nil)
+		op.Fail(err, "validation failed")
+		return nil, err
+	}
+
+	// Map to existing implementation for WireGuard
+	if protocolName == "wireguard" || protocolName == "wg" || protocolName == "WireGuard" {
+		p, err := s.repo.GetByPublicKey(ctx, identifier)
+		if err != nil {
+			op.Fail(err, "failed to get peer by identifier")
+			return nil, err
+		}
+		op.Complete("peer retrieved by identifier successfully")
+		return p, nil
+	}
+
+	err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "protocol not supported yet", false, nil).
+		WithMetadata("protocol", protocolName)
+	op.Fail(err, "unsupported protocol")
+	return nil, err
 }
 
 // List retrieves peers based on filters
@@ -428,12 +472,8 @@ func (s *service) UpdateStatusBatch(ctx context.Context, updates map[string]Stat
 		}
 		if !status.IsValid() {
 			err := apperrors.NewPeerError(apperrors.ErrCodePeerValidation, "invalid status", false, nil).
-				WithMetadata("status", status)
-			if domainErr, ok := err.(apperrors.DomainError); ok {
-				err = domainErr.WithMetadata("peer_id", peerID)
-			} else {
-				err = apperrors.WrapWithDomain(err, apperrors.DomainPeer, apperrors.ErrCodeValidation, "failed to validate status in batch", false).WithMetadata("peer_id", peerID)
-			}
+				WithMetadata("status", status).
+				WithMetadata("peer_id", peerID)
 			op.Fail(err, "validation failed for batch status update")
 			return err
 		}

@@ -3,7 +3,6 @@ module github.com/chiquitav2/vpn-rotator
 go 1.25.3
 
 require (
-	github.com/a-h/templ v0.3.960
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/uuid v1.6.0
 	github.com/gookit/event v1.2.0

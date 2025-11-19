@@ -8,6 +8,7 @@ import (
 
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/config"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/events"
+	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/protocols"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/provisioner"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/remote"
 	"github.com/chiquitav2/vpn-rotator/internal/rotator/infrastructure/store"
@@ -325,12 +326,15 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		return provErr
 	}
 
+	// Protocol manager adapter (WireGuard)
+	protoMgr := protocols.NewWireGuardProtocolManager(c.NodeInteractor)
+
 	// Create peer connection service
 	c.PeerConnectionSvr = services.NewPeerConnectionService(
 		c.NodeService,
 		c.PeerService,
 		c.IPService,
-		c.NodeInteractor,
+		protoMgr,
 		c.EventPublisher,
 		c.PeerConnectionTracker,
 		f.logger,
@@ -355,7 +359,7 @@ func (f *ServiceFactory) createApplicationServices(c *ServiceComponents) error {
 		c.NodeService,
 		c.PeerService,
 		c.IPService,
-		c.NodeInteractor,
+		protoMgr,
 		c.ResourceCleanupService,
 		c.EventPublisher,
 		f.logger,

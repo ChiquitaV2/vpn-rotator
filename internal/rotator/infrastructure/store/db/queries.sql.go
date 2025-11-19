@@ -68,13 +68,30 @@ func (q *Queries) CheckIPConflict(ctx context.Context, allocatedIp string) (int6
 	return ip_exists, err
 }
 
+const checkIdentifierConflict = `-- name: CheckIdentifierConflict :one
+SELECT EXISTS(SELECT 1 FROM peers WHERE protocol = ? AND identifier = ?) as id_exists
+`
+
+type CheckIdentifierConflictParams struct {
+	Protocol   string `json:"protocol"`
+	Identifier string `json:"identifier"`
+}
+
+// Check if a protocol+identifier is already in use
+func (q *Queries) CheckIdentifierConflict(ctx context.Context, arg CheckIdentifierConflictParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, checkIdentifierConflict, arg.Protocol, arg.Identifier)
+	var id_exists int64
+	err := row.Scan(&id_exists)
+	return id_exists, err
+}
+
 const checkPublicKeyConflict = `-- name: CheckPublicKeyConflict :one
-SELECT EXISTS(SELECT 1 FROM peers WHERE public_key = ?) as key_exists
+SELECT EXISTS(SELECT 1 FROM peers WHERE protocol = 'wireguard' AND identifier = ?) as key_exists
 `
 
 // Check if a public key is already in use
-func (q *Queries) CheckPublicKeyConflict(ctx context.Context, publicKey string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, checkPublicKeyConflict, publicKey)
+func (q *Queries) CheckPublicKeyConflict(ctx context.Context, identifier string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, checkPublicKeyConflict, identifier)
 	var key_exists int64
 	err := row.Scan(&key_exists)
 	return key_exists, err
@@ -217,21 +234,27 @@ const createPeer = `-- name: CreatePeer :one
 
 INSERT INTO peers (id,
                    node_id,
+                   protocol,
+                   identifier,
+                   protocol_config,
                    public_key,
                    allocated_ip,
                    preshared_key,
                    status,
                    created_at)
-VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 `
 
 type CreatePeerParams struct {
-	ID           string         `json:"id"`
-	NodeID       string         `json:"node_id"`
-	PublicKey    string         `json:"public_key"`
-	AllocatedIp  string         `json:"allocated_ip"`
-	PresharedKey sql.NullString `json:"preshared_key"`
-	Status       string         `json:"status"`
+	ID             string         `json:"id"`
+	NodeID         string         `json:"node_id"`
+	Protocol       string         `json:"protocol"`
+	Identifier     string         `json:"identifier"`
+	ProtocolConfig sql.NullString `json:"protocol_config"`
+	PublicKey      sql.NullString `json:"public_key"`
+	AllocatedIp    string         `json:"allocated_ip"`
+	PresharedKey   sql.NullString `json:"preshared_key"`
+	Status         string         `json:"status"`
 }
 
 // ----------------------------------------------------------------------------
@@ -242,6 +265,9 @@ func (q *Queries) CreatePeer(ctx context.Context, arg CreatePeerParams) (Peer, e
 	row := q.db.QueryRowContext(ctx, createPeer,
 		arg.ID,
 		arg.NodeID,
+		arg.Protocol,
+		arg.Identifier,
+		arg.ProtocolConfig,
 		arg.PublicKey,
 		arg.AllocatedIp,
 		arg.PresharedKey,
@@ -251,9 +277,12 @@ func (q *Queries) CreatePeer(ctx context.Context, arg CreatePeerParams) (Peer, e
 	err := row.Scan(
 		&i.ID,
 		&i.NodeID,
+		&i.Protocol,
+		&i.Identifier,
+		&i.ProtocolConfig,
 		&i.PublicKey,
-		&i.AllocatedIp,
 		&i.PresharedKey,
+		&i.AllocatedIp,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -417,7 +446,7 @@ func (q *Queries) GetAllNodes(ctx context.Context) ([]Node, error) {
 }
 
 const getAllPeers = `-- name: GetAllPeers :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+SELECT id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 FROM peers
 ORDER BY created_at DESC
 `
@@ -435,9 +464,12 @@ func (q *Queries) GetAllPeers(ctx context.Context) ([]Peer, error) {
 		if err := rows.Scan(
 			&i.ID,
 			&i.NodeID,
+			&i.Protocol,
+			&i.Identifier,
+			&i.ProtocolConfig,
 			&i.PublicKey,
-			&i.AllocatedIp,
 			&i.PresharedKey,
+			&i.AllocatedIp,
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -550,7 +582,7 @@ func (q *Queries) GetIdleNodes(ctx context.Context, dollar_1 sql.NullString) ([]
 }
 
 const getInactivePeers = `-- name: GetInactivePeers :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+SELECT id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 FROM peers
 WHERE status = 'active'
   AND (
@@ -573,9 +605,12 @@ func (q *Queries) GetInactivePeers(ctx context.Context, dollar_1 sql.NullString)
 		if err := rows.Scan(
 			&i.ID,
 			&i.NodeID,
+			&i.Protocol,
+			&i.Identifier,
+			&i.ProtocolConfig,
 			&i.PublicKey,
-			&i.AllocatedIp,
 			&i.PresharedKey,
+			&i.AllocatedIp,
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1011,7 +1046,7 @@ func (q *Queries) GetOrphanedNodes(ctx context.Context) ([]Node, error) {
 const getPeer = `-- name: GetPeer :one
 
 
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+SELECT id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 FROM peers
 WHERE id = ? LIMIT 1
 `
@@ -1029,9 +1064,12 @@ func (q *Queries) GetPeer(ctx context.Context, id string) (Peer, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.NodeID,
+		&i.Protocol,
+		&i.Identifier,
+		&i.ProtocolConfig,
 		&i.PublicKey,
-		&i.AllocatedIp,
 		&i.PresharedKey,
+		&i.AllocatedIp,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -1040,22 +1078,30 @@ func (q *Queries) GetPeer(ctx context.Context, id string) (Peer, error) {
 	return i, err
 }
 
-const getPeerByPublicKey = `-- name: GetPeerByPublicKey :one
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+const getPeerByIdentifier = `-- name: GetPeerByIdentifier :one
+SELECT id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 FROM peers
-WHERE public_key = ? LIMIT 1
+WHERE protocol = ? AND identifier = ? LIMIT 1
 `
 
-// Get a peer by public key
-func (q *Queries) GetPeerByPublicKey(ctx context.Context, publicKey string) (Peer, error) {
-	row := q.db.QueryRowContext(ctx, getPeerByPublicKey, publicKey)
+type GetPeerByIdentifierParams struct {
+	Protocol   string `json:"protocol"`
+	Identifier string `json:"identifier"`
+}
+
+// Get a peer by protocol + identifier
+func (q *Queries) GetPeerByIdentifier(ctx context.Context, arg GetPeerByIdentifierParams) (Peer, error) {
+	row := q.db.QueryRowContext(ctx, getPeerByIdentifier, arg.Protocol, arg.Identifier)
 	var i Peer
 	err := row.Scan(
 		&i.ID,
 		&i.NodeID,
+		&i.Protocol,
+		&i.Identifier,
+		&i.ProtocolConfig,
 		&i.PublicKey,
-		&i.AllocatedIp,
 		&i.PresharedKey,
+		&i.AllocatedIp,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -1093,7 +1139,7 @@ func (q *Queries) GetPeerStatistics(ctx context.Context) (GetPeerStatisticsRow, 
 }
 
 const getPeersByNode = `-- name: GetPeersByNode :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+SELECT id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 FROM peers
 WHERE node_id = ?
 ORDER BY created_at DESC
@@ -1112,9 +1158,12 @@ func (q *Queries) GetPeersByNode(ctx context.Context, nodeID string) ([]Peer, er
 		if err := rows.Scan(
 			&i.ID,
 			&i.NodeID,
+			&i.Protocol,
+			&i.Identifier,
+			&i.ProtocolConfig,
 			&i.PublicKey,
-			&i.AllocatedIp,
 			&i.PresharedKey,
+			&i.AllocatedIp,
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1134,7 +1183,7 @@ func (q *Queries) GetPeersByNode(ctx context.Context, nodeID string) ([]Peer, er
 }
 
 const getPeersByStatus = `-- name: GetPeersByStatus :many
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+SELECT id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 FROM peers
 WHERE status = ?
 ORDER BY created_at DESC
@@ -1153,9 +1202,12 @@ func (q *Queries) GetPeersByStatus(ctx context.Context, status string) ([]Peer, 
 		if err := rows.Scan(
 			&i.ID,
 			&i.NodeID,
+			&i.Protocol,
+			&i.Identifier,
+			&i.ProtocolConfig,
 			&i.PublicKey,
-			&i.AllocatedIp,
 			&i.PresharedKey,
+			&i.AllocatedIp,
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1176,7 +1228,7 @@ func (q *Queries) GetPeersByStatus(ctx context.Context, status string) ([]Peer, 
 
 const getPeersForMigration = `-- name: GetPeersForMigration :many
 
-SELECT id, node_id, public_key, allocated_ip, preshared_key, status, created_at, updated_at, last_handshake_at
+SELECT id, node_id, protocol, identifier, protocol_config, public_key, preshared_key, allocated_ip, status, created_at, updated_at, last_handshake_at
 FROM peers
 WHERE node_id = ?
   AND status = 'active'
@@ -1199,9 +1251,12 @@ func (q *Queries) GetPeersForMigration(ctx context.Context, nodeID string) ([]Pe
 		if err := rows.Scan(
 			&i.ID,
 			&i.NodeID,
+			&i.Protocol,
+			&i.Identifier,
+			&i.ProtocolConfig,
 			&i.PublicKey,
-			&i.AllocatedIp,
 			&i.PresharedKey,
+			&i.AllocatedIp,
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1341,7 +1396,7 @@ UPDATE nodes
 SET server_id         = ?,
     ip_address        = ?,
     server_public_key = ?,
-    status              = ?,
+    status = ?,
     version           = version + 1
 WHERE id = ?
 `

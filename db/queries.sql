@@ -226,11 +226,12 @@ SELECT *
 FROM peers
 WHERE id = ? LIMIT 1;
 
--- name: GetPeerByPublicKey :one
--- Get a peer by public key
+-- name: GetPeerByIdentifier :one
+-- Get a peer by protocol + identifier
 SELECT *
 FROM peers
-WHERE public_key = ? LIMIT 1;
+WHERE protocol = ?
+  AND identifier = ? LIMIT 1;
 
 -- name: GetPeersByNode :many
 -- Get all peers for a specific node
@@ -279,12 +280,15 @@ ORDER BY allocated_ip;
 -- Create a new peer
 INSERT INTO peers (id,
                    node_id,
+                   protocol,
+                   identifier,
+                   protocol_config,
                    public_key,
                    allocated_ip,
                    preshared_key,
                    status,
                    created_at)
-VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *;
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING *;
 
 -- name: UpdatePeerStatus :exec
 -- Update peer status
@@ -398,4 +402,8 @@ SELECT EXISTS(SELECT 1 FROM peers WHERE allocated_ip = ?) as ip_exists;
 
 -- name: CheckPublicKeyConflict :one
 -- Check if a public key is already in use
-SELECT EXISTS(SELECT 1 FROM peers WHERE public_key = ?) as key_exists;
+SELECT EXISTS(SELECT 1 FROM peers WHERE protocol = 'wireguard' AND identifier = ?) as key_exists;
+
+-- name: CheckIdentifierConflict :one
+-- Check if a protocol+identifier is already in use
+SELECT EXISTS(SELECT 1 FROM peers WHERE protocol = ? AND identifier = ?) as id_exists;
